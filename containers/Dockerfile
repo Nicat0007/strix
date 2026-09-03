@@ -17,7 +17,9 @@ RUN mkdir -p /out/bin && \
     go install -v github.com/projectdiscovery/cvemap/cmd/vulnx@latest && \
     go install -v github.com/jaeles-project/gospider@latest && \
     go install -v github.com/projectdiscovery/interactsh/cmd/interactsh-client@latest && \
-    go install -v golang.org/x/vuln/cmd/govulncheck@latest
+    go install -v golang.org/x/vuln/cmd/govulncheck@latest && \
+    go install -v github.com/lc/gau/v2/cmd/gau@latest && \
+    go install -v github.com/tomnomnom/waybackurls@latest
 
 # ---------------------------------------------------------------------------
 # Runtime stage
@@ -167,7 +169,8 @@ RUN git clone https://github.com/aravind0x7/JS-Snooper.git && \
     git clone https://github.com/xchopath/jsniper.sh.git && \
     chmod +x jsniper.sh/jsniper.sh && \
     git clone https://github.com/ticarpi/jwt_tool.git && \
-    chmod +x jwt_tool/jwt_tool.py
+    chmod +x jwt_tool/jwt_tool.py && \
+    git clone https://github.com/obheda12/GitDorker.git
 
 USER root
 
@@ -245,14 +248,40 @@ RUN python3 -m venv /app/.venv && \
     /app/.venv/bin/pip install --no-cache-dir \
         requests httpx beautifulsoup4 lxml pyjwt cryptography && \
     /app/.venv/bin/pip install --no-cache-dir -r /home/pentester/tools/jwt_tool/requirements.txt && \
+    /app/.venv/bin/pip install --no-cache-dir -r /home/pentester/tools/GitDorker/requirements.txt && \
     printf '%s\n' \
         '#!/bin/bash' \
         'exec /app/.venv/bin/python /home/pentester/tools/jwt_tool/jwt_tool.py "$@"' \
         > /home/pentester/.local/bin/jwt_tool && \
-    chmod +x /home/pentester/.local/bin/jwt_tool
+    chmod +x /home/pentester/.local/bin/jwt_tool && \
+    printf '%s\n' \
+        '#!/bin/bash' \
+        '# GitDorker requires a GitHub PAT via -tf <tokenfile>. If the caller' \
+        '# did not pass -tf explicitly, materialize one from $GITHUB_TOKEN so' \
+        '# the caller only has to set the env var. Never bake a token into the image.' \
+        'set -e' \
+        'tokenfile=""' \
+        'cleanup() { [ -n "$tokenfile" ] && rm -f "$tokenfile"; }' \
+        'trap cleanup EXIT' \
+        'if [ -n "$GITHUB_TOKEN" ] && ! printf "%s\n" "$@" | grep -q -- "-tf"; then' \
+        '    tokenfile="$(mktemp)"' \
+        '    printf "%s\n" "$GITHUB_TOKEN" > "$tokenfile"' \
+        '    set -- "$@" -tf "$tokenfile"' \
+        'fi' \
+        'exec /app/.venv/bin/python /home/pentester/tools/GitDorker/GitDorker.py "$@"' \
+        > /home/pentester/.local/bin/gitdorker && \
+    chmod +x /home/pentester/.local/bin/gitdorker
 
 COPY --chown=pentester:pentester strix/tools/proxy/caido_api.py /opt/strix-python/caido_api.py
 ENV PYTHONPATH=/opt/strix-python
+
+# Project-authored, high-precision semgrep/gitleaks rules that
+# custom/source_aware_sast.md's baseline bundle layers on top of the
+# public p/default+p/golang+p/secrets packs and gitleaks' own default
+# ruleset. See strix/skills/custom/semgrep-rules/ and
+# strix/skills/custom/gitleaks-rules/ for what each rule does and why.
+COPY --chown=pentester:pentester strix/skills/custom/semgrep-rules /home/pentester/tools/semgrep-rules
+COPY --chown=pentester:pentester strix/skills/custom/gitleaks-rules /home/pentester/tools/gitleaks-rules
 
 # Login shells (e.g. `bash -lc`) source /etc/profile, which on Debian/Kali
 # hard-resets PATH and drops the image's ENV PATH entries. Re-add the same

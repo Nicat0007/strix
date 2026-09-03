@@ -1,0 +1,66 @@
+# Project-local gitleaks config for custom/source_aware_sast.md's baseline
+# bundle. Extends (never replaces) gitleaks' own default ruleset — tested
+# against gitleaks v8.30.1, the version the Dockerfile installs (it always
+# fetches the latest release; an old cached local gitleaks binary may not
+# correctly merge `[extend] useDefault = true` with a custom `[allowlist]`
+# — confirmed broken on a stray local v8.18.4 during testing, confirmed
+# working on v8.30.1, so this file assumes a reasonably current gitleaks).
+#
+# What is deliberately NOT duplicated here, and why: Google (gcp-api-key),
+# AWS (aws-access-token), Stripe (stripe-access-token), and Anthropic
+# (anthropic-api-key / anthropic-admin-api-key) are already covered by
+# gitleaks' own default ruleset — confirmed by testing against the real
+# optistate plugin's hardcoded Google API key, which gitleaks' unmodified
+# default config already catches via `gcp-api-key`. Redefining any of
+# those here would just create a second, driftable copy of a rule the
+# gitleaks project actively maintains — worse than not having it, since a
+# stale local copy can silently fall behind upstream's own fixes. Only
+# genuinely missing coverage and a genuinely-observed false-positive class
+# are added below.
+
+title = "strix custom secret-detection extensions"
+
+[extend]
+useDefault = true
+
+# ---------------------------------------------------------------------
+# DeepSeek API key format. Confirmed NOT covered by gitleaks' default
+# ruleset (checked: no "deepseek" rule id, and neither the OpenAI rule
+# — which requires an embedded "T3BlbkFJ" marker — nor the Anthropic
+# rule — which requires the "sk-ant-api03-...AA" shape — matches a
+# plain "sk-<32 hex>" key). Relevant to this project specifically since
+# CLAUDE.md documents DeepSeek as the primary LLM backend.
+#
+# Honesty note: DeepSeek does not publish an official fixed key-format
+# spec the way Stripe/AWS do, so this is a best-effort pattern (sk- +
+# 32 lowercase hex chars, matching the shape used by several
+# OpenAI-compatible providers) rather than a vendor-confirmed format.
+# Tested clean against random hex IDs, nonces, UUIDs, MD5/SHA1 hashes,
+# and WordPress option-name constants that happen to be hex-shaped —
+# none of those carry the "sk-" prefix, so none collide.
+[[rules]]
+id = "deepseek-api-key"
+description = "Detected a DeepSeek API key format (sk- + 32 hex chars), risking unauthorized access to DeepSeek's LLM API and billing."
+regex = '''\b(sk-[a-f0-9]{32})\b'''
+entropy = 3.0
+keywords = ["sk-"]
+
+# ---------------------------------------------------------------------
+# Backstop for a real false-positive class found while testing gitleaks'
+# own `generic-api-key` default rule against optistate: WordPress-style
+# constants/option-name strings whose PHP identifier contains "key"
+# (STATE_KEY_PREFIX, $baseline_key, etc.) but whose VALUE is a plain
+# lowercase_snake_case option-name string, not a secret
+# (e.g. STATE_KEY_PREFIX = "optistate_ls_state_v4"). Not currently
+# triggered against optistate by the gitleaks v8.30.1 shipped ruleset
+# (upstream's generic-api-key appears to have been tightened since the
+# raw master-branch config I diffed against), but kept as a defensive
+# backstop against this recurring WordPress-plugin idiom, since a real
+# API key virtually never happens to be pure lowercase_snake_case (real
+# keys are base64/hex/mixed-case). A mixed-case or hex-only secret is
+# untouched by this allowlist.
+[allowlist]
+description = "WordPress-style lowercase_snake_case option/constant NAME values (e.g. STATE_KEY_PREFIX = \"plugin_ls_state_v4\") are not secrets; real API keys are virtually never pure lowercase snake_case."
+regexes = [
+  '''^[a-z][a-z0-9_]{5,}$''',
+]

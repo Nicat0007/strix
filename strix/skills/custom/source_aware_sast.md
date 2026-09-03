@@ -17,13 +17,24 @@ mkdir -p /workspace/.source-aware
 
 ## Baseline Coverage Bundle (Recommended)
 
-Run this baseline once per repository before deep narrowing:
+Run this baseline once per repository before deep narrowing. Both
+semgrep and gitleaks below load a project-authored rule/config file
+(`/home/pentester/tools/semgrep-rules`,
+`/home/pentester/tools/gitleaks-rules/strix.gitleaks.toml`, baked into the
+sandbox image) on top of the public registry packs and gitleaks' own
+default ruleset — narrow, high-precision additions written and tested
+against a real WordPress plugin, not broad `AIza.*`-style scans. See the
+comments in those files for what each rule matches, what it deliberately
+does not, and why. This does not change the FP-control model:
+`counterevidence.md` still governs whether any hit — from a public pack
+or from these — becomes a report.
 
 ```bash
 ART=/workspace/.source-aware
 mkdir -p "$ART"
 
 semgrep scan --config p/default --config p/golang --config p/secrets \
+  --config /home/pentester/tools/semgrep-rules \
   --metrics=off --json --output "$ART/semgrep.json" .
 # Build deterministic AST targets from semgrep scope (no hardcoded path guessing)
 python3 - <<'PY'
@@ -54,14 +65,183 @@ bounded = scanned[:4000]
 targets_file.write_text("".join(f"{p}\n" for p in bounded), encoding="utf-8")
 print(f"sg-targets: {len(bounded)}")
 PY
-xargs -r -n 200 sg run --pattern '$F($$$ARGS)' --json=stream < "$ART/sg-targets.txt" \
+# -d '\n' keeps a path containing spaces as one xargs argument instead of
+# splitting it into two - without it, any target with a space in a file or
+# directory name silently drops matches in that path (found by testing
+# against a real target with a space-containing directory name).
+xargs -r -d '\n' -n 200 sg run --pattern '$F($$$ARGS)' --json=stream < "$ART/sg-targets.txt" \
   > "$ART/ast-grep.json" 2> "$ART/ast-grep.log" || true
-gitleaks detect --source . --report-format json --report-path "$ART/gitleaks.json" || true
-trufflehog filesystem --no-update --json --no-verification . > "$ART/trufflehog.json" || true
+# --no-git: gitleaks's `detect` subcommand scans git COMMIT HISTORY by
+# default and silently reports zero findings on a target with no .git at
+# all (a plain extracted plugin/source tree, not a clone) - confirmed by
+# testing against exactly that shape of target. --no-git switches it to
+# scanning the working tree, which is what a source-aware scan wants.
+gitleaks detect --source . --no-git --config /home/pentester/tools/gitleaks-rules/strix.gitleaks.toml \
+  --report-format json --report-path "$ART/gitleaks.json" || true
+# Verified-only by default: an unverified "secret" is exactly the noise the
+# LLM has to spend a proof-gap pass ruling out, while a verified hit is
+# already high-confidence and can go straight to reported. Verification
+# makes a live API call to the credential's own provider, so it needs real
+# network reachability — use the --no-verification form below instead when
+# the target is offline/airgapped and that reachability doesn't exist.
+trufflehog filesystem --no-update --json . > "$ART/trufflehog.json" || true
+# Offline/unreachable-target fallback (verification impossible): trades
+# confidence for coverage — every hit here is unverified and must go
+# through the normal open_proof_gap path, never straight to reported.
+#   trufflehog filesystem --no-update --json --no-verification . > "$ART/trufflehog.json" || true
 # Keep trivy focused on vuln/misconfig (secrets already covered above) and increase timeout for large repos
 trivy fs --scanners vuln,misconfig --timeout 30m --offline-scan \
   --format json --output "$ART/trivy-fs.json" . || true
 ```
+
+## Entry-Point Map (Build Once, Reuse Everywhere)
+
+The baseline bundle above produces raw tool JSON — useful, but every
+subagent that reads it pays the token cost of re-parsing and
+re-interpreting the same output. Run this distillation exactly **once**
+per repository, immediately after the baseline bundle, into
+`/workspace/.source-aware/entry_points.md`. Every subagent spawned after
+this point reads that file instead of re-deriving the map from source or
+re-running the scanners — see `source_aware_whitebox.md`'s Agent
+Delegation Guidance and `root_agent.md`'s "Reuse Recon and Triage
+Artifacts" for the reuse discipline this artifact exists to support.
+
+**Two tiers, deliberately not one merged list.** An earlier version of
+this distillation folded semgrep's curated hits and ast-grep's *ruleless*
+`$F($$$ARGS)` sweep (which matches literally every function call in the
+codebase) into one file:line-sorted list. Tested against a real
+38-file WordPress plugin: the ast-grep sweep alone produced ~14,600
+entries, and a genuine hardcoded-credential hit from a curated semgrep
+rule landed at line 11,981 of a 14,664-line file — buried under 82% of
+undifferentiated noise, with nothing distinguishing "a rule flagged this
+as a hardcoded credential" from "this line calls `get_option()`". That is
+exactly the shape of miss this artifact exists to prevent, so the
+structure below is two tiers instead: **High-Precision Hits** first
+(semgrep, gitleaks, trufflehog — small, curated, this is what to read
+before anything else) and **General Structural Sweep** last (the raw
+ast-grep dump — a map to grep through when tracing a specific call site,
+never a list to read top to bottom).
+
+Same pass, same zero LLM cost, also flag functions whose name suggests
+they compute a value with real-world consequence or gate a state
+transition, so the business-logic reasoning agent (see
+`vulnerabilities/business_logic.md`) gets a prioritized starting list
+instead of reading the whole tree cold:
+
+```bash
+ART=/workspace/.source-aware
+{
+  echo "# Entry-Point Map"
+  echo
+  echo "## High-Precision Hits (semgrep + gitleaks + trufflehog — read this section first)"
+  python3 - <<'PY'
+import json
+from pathlib import Path
+
+art = Path("/workspace/.source-aware")
+rows = []
+
+# semgrep.json is one JSON object with a top-level "results" array.
+try:
+    data = json.loads((art / "semgrep.json").read_text(encoding="utf-8"))
+    for r in data.get("results", []):
+        if not isinstance(r, dict):
+            continue
+        p = r.get("path")
+        start = r.get("start")
+        line = start.get("line") if isinstance(start, dict) else None
+        rule = r.get("check_id") or "semgrep"
+        if p:
+            rows.append((p, line or 0, f"semgrep: {rule}"))
+except Exception:
+    pass
+
+# gitleaks.json is a top-level JSON array (empty array, not missing, when clean).
+try:
+    data = json.loads((art / "gitleaks.json").read_text(encoding="utf-8"))
+    for r in data or []:
+        if not isinstance(r, dict):
+            continue
+        p = r.get("File")
+        line = r.get("StartLine")
+        rule = r.get("RuleID") or "gitleaks"
+        if p:
+            rows.append((p, line or 0, f"gitleaks: {rule}"))
+except Exception:
+    pass
+
+# trufflehog.json is NDJSON, one match per line, NOT a single JSON blob.
+try:
+    for line_text in (art / "trufflehog.json").read_text(encoding="utf-8").splitlines():
+        line_text = line_text.strip()
+        if not line_text:
+            continue
+        try:
+            r = json.loads(line_text)
+        except Exception:
+            continue
+        if not isinstance(r, dict):
+            continue
+        fs = (((r.get("SourceMetadata") or {}).get("Data") or {}).get("Filesystem") or {})
+        p = fs.get("file")
+        line = fs.get("line")
+        rule = r.get("DetectorName") or "trufflehog"
+        verified = "verified" if r.get("Verified") else "unverified"
+        if p:
+            rows.append((p, line or 0, f"trufflehog: {rule} ({verified})"))
+except Exception:
+    pass
+
+for p, line, rule in sorted(rows, key=lambda t: (t[0], t[1])):
+    print(f"- {p}:{line} — {rule}")
+PY
+  echo
+  echo "## Logic-bearing functions (candidates for business-logic QA)"
+  rg -n --type-add 'code:*.{php,py,js,ts,go,java,rb}' -tcode \
+    -e '\b(function|def|func)\s+\w*(price|total|amount|balance|quantity|discount|refund|charge|calculate|compute)\w*' \
+    -e '\b(function|def|func)\s+\w*(can_|validate_|check_|authorize|transition|approve)\w*' \
+    . || true
+  echo
+  echo "## General Structural Sweep (ast-grep — every function call in the codebase; a map to grep for a specific call site by name, NOT a hit list to read top to bottom)"
+  python3 - <<'PY'
+import json
+from pathlib import Path
+
+art = Path("/workspace/.source-aware")
+rows = []
+
+# ast-grep.json comes from `sg run --json=stream`: NDJSON, one match per
+# line, NOT a single JSON blob — do not json.loads() the whole file.
+try:
+    for line_text in (art / "ast-grep.json").read_text(encoding="utf-8").splitlines():
+        line_text = line_text.strip()
+        if not line_text:
+            continue
+        try:
+            r = json.loads(line_text)
+        except Exception:
+            continue
+        if not isinstance(r, dict):
+            continue
+        p = r.get("file") or r.get("path")
+        rng = r.get("range") or {}
+        start = rng.get("start") if isinstance(rng, dict) else None
+        line_no = start.get("line") if isinstance(start, dict) else None
+        if p:
+            rows.append((p, line_no or 0))
+except Exception:
+    pass
+
+for p, line in sorted(rows, key=lambda t: (t[0], t[1])):
+    print(f"- {p}:{line}")
+PY
+} > "$ART/entry_points.md"
+```
+
+Add any additional entry points a loaded framework skill's own sweeps
+surface (e.g. `wordpress.md`'s `wp_ajax_*`/`register_rest_route` greps) to
+this same file rather than leaving them in a separate scratch note — one
+map, one place every later agent looks.
 
 ## Semgrep First Pass
 
@@ -70,10 +250,12 @@ Use Semgrep as the default static triage pass:
 ```bash
 # Preferred deterministic profile set (works with --metrics=off)
 semgrep scan --config p/default --config p/golang --config p/secrets \
+  --config /home/pentester/tools/semgrep-rules \
   --metrics=off --json --output /workspace/.source-aware/semgrep.json .
 
 # If you choose auto config, do not combine it with --metrics=off
-semgrep scan --config auto --json --output /workspace/.source-aware/semgrep-auto.json .
+semgrep scan --config auto --config /home/pentester/tools/semgrep-rules \
+  --json --output /workspace/.source-aware/semgrep-auto.json .
 ```
 
 If diff scope is active, restrict to changed files first, then expand only when needed.
@@ -84,7 +266,8 @@ Use `sg` for structure-aware code hunting:
 
 ```bash
 # Ruleless structural pass over deterministic target list (no sgconfig.yml required)
-xargs -r -n 200 sg run --pattern '$F($$$ARGS)' --json=stream \
+# -d '\n': see the Baseline Coverage Bundle above for why this matters.
+xargs -r -d '\n' -n 200 sg run --pattern '$F($$$ARGS)' --json=stream \
   < /workspace/.source-aware/sg-targets.txt \
   > /workspace/.source-aware/ast-grep.json 2> /workspace/.source-aware/ast-grep.log || true
 ```
@@ -138,13 +321,27 @@ needs to be vulnerable.
 
 Load `infrastructure_lifecycle` when source, images, firmware, or history contain abandoned domains, provider resources, package namespaces, update URLs, mail identities, telemetry, or control endpoints. Use targeted string/dataflow analysis when this is the research question; the full baseline scanner bundle is not required merely to trace one endpoint consumer.
 
+A `Plugin Name:`/`Theme Name:` header block in the main PHP file, a
+`readme.txt` with WordPress-style headers (`Stable tag:`, `Tested up to:`), a
+`wp-content/plugins/`/`wp-content/themes/` path, or heavy
+`add_action`/`add_filter`/`$wpdb`/`register_rest_route` usage marks
+WordPress plugin or theme code. `load_skill(["wordpress"])` before running
+the generic baseline against it — WordPress's own security model (nonces,
+capability checks, `$wpdb->prepare`, the `esc_*`/`sanitize_*` APIs) is not
+something the generic `p/php` semgrep pack understands, and the real
+CVE-yielding bugs live in exactly those WordPress-specific gaps.
+
 ## Secret and Supply Chain Coverage
 
 Detect hardcoded credentials:
 
 ```bash
-gitleaks detect --source . --report-format json --report-path /workspace/.source-aware/gitleaks.json
-trufflehog filesystem --json . > /workspace/.source-aware/trufflehog.json
+# --no-git: see the Baseline Coverage Bundle above for why this matters.
+gitleaks detect --source . --no-git --config /home/pentester/tools/gitleaks-rules/strix.gitleaks.toml \
+  --report-format json --report-path /workspace/.source-aware/gitleaks.json
+# Verified-only by default — see the Baseline Coverage Bundle above for why,
+# and for the --no-verification offline/unreachable-target fallback form.
+trufflehog filesystem --no-update --json . > /workspace/.source-aware/trufflehog.json
 ```
 
 Run repository-wide dependency and config checks:
