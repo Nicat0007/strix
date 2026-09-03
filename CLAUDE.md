@@ -1348,3 +1348,43 @@ commit. Docker image rebuild required before the sandbox picks up the
 new `COPY` layers (semgrep-rules/gitleaks-rules) or the
 `source_aware_sast.md` command changes take effect for a fresh scan.
 
+**Refinement — user caught a scoping gap in the two-tier fix, corrected
+before the commit above's design could drift:** the committed two-tier
+split put **all** semgrep results (42 on optistate, including the 41 from
+the public `p/default`/`p/golang`/`p/secrets` packs) into
+`High-Precision Hits`, not just the 4 project-authored rules. User wanted
+that section scoped to the project's own rules specifically. Fixing it by
+literally dropping the other 41 would have silently discarded real
+signal, so this became a **three-tier** split instead of the two the user
+described, flagged and explained rather than silently expanded in scope:
+
+1. `## High-Signal Findings` — the 4 `custom/semgrep-rules/` rules
+   (matched by bare rule id via `check_id.rsplit(".", 1)[-1]`, robust to
+   the config path differing between a local test and the sandbox's
+   `/home/pentester/tools/semgrep-rules`) + gitleaks + trufflehog.
+2. `## Public-Pack Scanner Hits` — every other semgrep result (the
+   registry packs) — still curated, just not project-authored, kept
+   instead of dropped.
+3. `## General Structural Sweep` — unchanged, the raw ast-grep dump.
+
+Also cleaned up the implementation itself: the first version bridged two
+separate `python3` heredoc invocations via a `/tmp/.entry_points_public_pack.pkl`
+pickle file, which was fragile (cross-process temp file, no real reason
+for two processes) — collapsed into one Python pass that prints both
+section headers and bodies from the same parsed data.
+
+**Re-verified against the same real optistate run**: entry_points.md is
+now 14,675 lines total; `High-Signal Findings` starts at line 3, and the
+credential finding is at **lines 5-7** — the first three findings in the
+file, immediately after the header line. `Public-Pack Scanner Hits`
+(line 9) holds the 11 other real findings from the public packs
+(tainted-callable, tainted-sql-string, unlink-use, exec-use,
+unserialize-use, md5-loose-equality) that a strict two-tier cut would
+have discarded. `General Structural Sweep` starts at line 55, holding
+the ~14,600-line ast-grep dump.
+
+**Committed as a new commit** (not amended onto the prior one — keeps
+the iteration, first pass then user-caught refinement, visible in
+history rather than rewritten) on top of the semgrep/gitleaks-rules
+commit above.
+

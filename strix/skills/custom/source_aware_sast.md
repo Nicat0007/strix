@@ -106,21 +106,31 @@ re-running the scanners — see `source_aware_whitebox.md`'s Agent
 Delegation Guidance and `root_agent.md`'s "Reuse Recon and Triage
 Artifacts" for the reuse discipline this artifact exists to support.
 
-**Two tiers, deliberately not one merged list.** An earlier version of
-this distillation folded semgrep's curated hits and ast-grep's *ruleless*
-`$F($$$ARGS)` sweep (which matches literally every function call in the
-codebase) into one file:line-sorted list. Tested against a real
-38-file WordPress plugin: the ast-grep sweep alone produced ~14,600
-entries, and a genuine hardcoded-credential hit from a curated semgrep
-rule landed at line 11,981 of a 14,664-line file — buried under 82% of
-undifferentiated noise, with nothing distinguishing "a rule flagged this
-as a hardcoded credential" from "this line calls `get_option()`". That is
-exactly the shape of miss this artifact exists to prevent, so the
-structure below is two tiers instead: **High-Precision Hits** first
-(semgrep, gitleaks, trufflehog — small, curated, this is what to read
-before anything else) and **General Structural Sweep** last (the raw
-ast-grep dump — a map to grep through when tracing a specific call site,
-never a list to read top to bottom).
+**Three tiers, ordered by signal, deliberately not one merged list.** An
+earlier version of this distillation folded semgrep's curated hits and
+ast-grep's *ruleless* `$F($$$ARGS)` sweep (which matches literally every
+function call in the codebase) into one file:line-sorted list. Tested
+against a real 38-file WordPress plugin: the ast-grep sweep alone
+produced ~14,600 entries, and a genuine hardcoded-credential hit from a
+curated semgrep rule landed at line 11,981 of a 14,664-line file —
+buried under 82% of undifferentiated noise, with nothing distinguishing
+"a rule flagged this as a hardcoded credential" from "this line calls
+`get_option()`". That is exactly the shape of miss this artifact exists
+to prevent, so the structure below is three tiers:
+
+1. **High-Signal Findings** — the project-authored rules from
+   `custom/semgrep-rules/` plus gitleaks and trufflehog. Small (single
+   digits to low tens of lines on a real plugin), rule-authored, this is
+   what to read before anything else.
+2. **Public-Pack Scanner Hits** — every other semgrep result (the
+   `p/default`/`p/golang`/`p/secrets` registry packs). Still curated
+   (semgrep matched a specific rule, not "any call"), but broader and
+   less precision-tuned than tier 1 — kept as its own tier rather than
+   merged into tier 1 (diluting the small, high-confidence set) or
+   silently dropped (losing real signal).
+3. **General Structural Sweep** — the raw ast-grep dump, last, explicitly
+   labeled as a map to grep through when tracing a specific call site,
+   never a list to read top to bottom.
 
 Same pass, same zero LLM cost, also flag functions whose name suggests
 they compute a value with real-world consequence or gate a state
@@ -133,13 +143,25 @@ ART=/workspace/.source-aware
 {
   echo "# Entry-Point Map"
   echo
-  echo "## High-Precision Hits (semgrep + gitleaks + trufflehog — read this section first)"
   python3 - <<'PY'
 import json
 from pathlib import Path
 
 art = Path("/workspace/.source-aware")
-rows = []
+high_signal = []
+public_pack = []
+
+# Bare rule ids from custom/semgrep-rules/wordpress-secrets-and-sinks.yml.
+# Semgrep prefixes check_id with the config path it was loaded from (which
+# differs between a local test run and the sandbox's
+# /home/pentester/tools/semgrep-rules), so match on the id's own suffix
+# rather than hardcoding a path.
+CUSTOM_RULE_IDS = {
+    "hardcoded-cloud-key-literal-to-sink",
+    "hardcoded-cloud-key-literal-in-defaults-array",
+    "unserialize-tainted-without-class-restriction",
+    "wpdb-tainted-query-without-escaping",
+}
 
 # semgrep.json is one JSON object with a top-level "results" array.
 try:
@@ -150,9 +172,15 @@ try:
         p = r.get("path")
         start = r.get("start")
         line = start.get("line") if isinstance(start, dict) else None
-        rule = r.get("check_id") or "semgrep"
-        if p:
-            rows.append((p, line or 0, f"semgrep: {rule}"))
+        check_id = r.get("check_id") or "semgrep"
+        if not p:
+            continue
+        bare_id = check_id.rsplit(".", 1)[-1]
+        row = (p, line or 0, f"semgrep: {check_id}")
+        if bare_id in CUSTOM_RULE_IDS:
+            high_signal.append(row)
+        else:
+            public_pack.append(row)
 except Exception:
     pass
 
@@ -166,7 +194,7 @@ try:
         line = r.get("StartLine")
         rule = r.get("RuleID") or "gitleaks"
         if p:
-            rows.append((p, line or 0, f"gitleaks: {rule}"))
+            high_signal.append((p, line or 0, f"gitleaks: {rule}"))
 except Exception:
     pass
 
@@ -188,11 +216,18 @@ try:
         rule = r.get("DetectorName") or "trufflehog"
         verified = "verified" if r.get("Verified") else "unverified"
         if p:
-            rows.append((p, line or 0, f"trufflehog: {rule} ({verified})"))
+            high_signal.append((p, line or 0, f"trufflehog: {rule} ({verified})"))
 except Exception:
     pass
 
-for p, line, rule in sorted(rows, key=lambda t: (t[0], t[1])):
+print("## High-Signal Findings (project-authored semgrep rules + gitleaks + trufflehog — read this section first)")
+print()
+for p, line, rule in sorted(high_signal, key=lambda t: (t[0], t[1])):
+    print(f"- {p}:{line} — {rule}")
+print()
+print("## Public-Pack Scanner Hits (semgrep p/default + p/golang + p/secrets — broader, less precision-tuned than the section above)")
+print()
+for p, line, rule in sorted(public_pack, key=lambda t: (t[0], t[1])):
     print(f"- {p}:{line} — {rule}")
 PY
   echo
