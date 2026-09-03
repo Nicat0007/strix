@@ -36,7 +36,7 @@ High-signal flags:
 - `-ef, -extension-filter <list>` extension exclusions
 - `-tlsi, -tls-impersonate` experimental JA3/TLS impersonation
 - `-hl, -headless` enable hybrid headless crawling
-- `-sc, -system-chrome` use local Chrome for headless mode
+- `-scp, -system-chrome-path <path>` **use this, not `-sc`**, to actually run the sandbox's installed Chromium (`/usr/bin/chromium`) — traced katana's source (`internal/runner/options.go`, `pkg/engine/headless/headless.go`): the crawler engine reads the Chrome binary path from `SystemChromePath`, which only `-scp` populates. `-sc, -system-chrome` (bare boolean) does **not** reliably wire to it — confirmed by direct testing: `-sc` alone (no `-scp`) triggered katana downloading its own ~90MB Chromium build from `storage.googleapis.com` instead of using the installed one, adding 90+ seconds before it even started crawling. Always pass `-scp /usr/bin/chromium` explicitly for headless mode in this sandbox.
 - `-ho, -headless-options <csv>` extra Chrome options (for example proxy-server)
 - `-nos, -no-sandbox` run Chrome headless with no-sandbox
 - `-noi, -no-incognito` disable incognito in headless mode
@@ -54,10 +54,10 @@ Common patterns:
   `katana -u https://target.tld -d 5 -ct 15m -jc -jsl -kf all -c 10 -p 10 -rl 50 -o katana_urls.txt`
 - Multi-target run with JSONL output:
   `katana -list urls.txt -d 3 -jc -silent -j -o katana.jsonl`
-- Headless crawl with local Chrome:
-  `katana -u https://target.tld -hl -sc -nos -xhr -j -o crawl/katana_headless.jsonl`
+- Headless crawl with local Chrome (bounded — see `reconnaissance/asset_discovery.md`'s conditional headless pass for when to reach for this and why it must stay bounded: an unbounded depth-2 headless crawl measured 119x slower than the equivalent static crawl in direct testing):
+  `katana -u https://target.tld -hl -scp /usr/bin/chromium -nos -xhr -d 2 -ct 5m -mdp 50 -j -o crawl/katana_headless.jsonl`
 - Headless crawl through proxy:
-  `katana -u https://target.tld -hl -sc -ho proxy-server=http://127.0.0.1:48080 -j -o crawl/katana_proxy.jsonl`
+  `katana -u https://target.tld -hl -scp /usr/bin/chromium -ho proxy-server=http://127.0.0.1:48080 -ct 5m -mdp 50 -j -o crawl/katana_proxy.jsonl`
 
 Critical correctness rules:
 - `-kf` must be followed by one of `all`, `robotstxt`, or `sitemapxml`.
@@ -84,7 +84,7 @@ Usage rules:
 Failure recovery:
 - If crawl runs too long, lower `-d` and optionally add `-ct`.
 - If memory spikes, disable `-jsl` and lower `-c/-p`.
-- If headless fails with Chrome errors, drop `-sc` or install system Chrome.
+- If headless fails with Chrome errors, confirm the `-scp` path actually exists (`/usr/bin/chromium` in this sandbox) rather than dropping it — without it katana falls back to downloading its own Chromium, which is slow and may be blocked by scope/network restrictions.
 - If output is noisy, tighten scope and add `-ef` filters.
 
 If uncertain, query web_search with:

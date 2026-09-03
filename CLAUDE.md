@@ -1388,3 +1388,108 @@ the iteration, first pass then user-caught refinement, visible in
 history rather than rewritten) on top of the semgrep/gitleaks-rules
 commit above.
 
+## 18. BLACK-BOX RECON AUDIT + JS-HEAVY SPA FIX (implemented)
+
+Audit track (parallel to §17's white-box scanner-rules work), triggered
+by a request to assess four black-box-testing depth questions: OTP/
+human-in-the-loop, differential/mutation testing, JS-heavy SPA recon
+depth, and rate-limit/timing bypass. Audited by reading the actual skill
+files (not guessing):
+
+- **OTP/human-in-the-loop**: already strong — `account_provisioning.md`'s
+  4-tier fallback (auto OTP-bypass → `respond_to_user` human-in-the-loop →
+  operator-credential file → `needs_follow_up`) already covers this,
+  built in §6. No gap.
+- **Differential/mutation testing**: the actual techniques exist
+  (`mass_assignment.md`'s Shape Variants, `broken_function_level_authorization.md`'s
+  verb sweep, `idor.md`'s Enumeration Techniques) but are scattered
+  per-vuln-class rather than one cross-cutting discipline. Noted, not
+  yet acted on.
+- **Rate-limit/timing bypass**: the IP-spoof-header technique
+  (`X-Forwarded-For`/`X-Real-IP`/etc. against rate-limited endpoints) is
+  already documented in `header_injection.md`, but as one bullet in a
+  general header-injection catalog, not a systematic per-endpoint
+  methodology with its own closure discipline. Noted, not yet acted on.
+- **JS-heavy SPA recon depth**: the one concrete, closeable gap found —
+  `reconnaissance/asset_discovery.md`'s crawl step (`katana ... -jc -jsl`)
+  is 100% static (parses fetched JS as text, never executes it), so it
+  never sees an XHR/fetch call a SPA only fires at runtime. The
+  capability to fix this already existed in two tool playbooks
+  (`tooling/katana.md`'s `-hl -xhr` headless mode,
+  `tooling/agent_browser.md`'s `network har`) but neither was wired into
+  the actual recon methodology. Implemented below.
+
+**Implementation — all empirically verified inside the real
+`strix-sandbox:dev` image (Chromium + katana already present from §17's
+work), not assumed:**
+
+- **`strix/skills/tooling/katana.md` — fixed a real, independent bug found
+  while verifying**: `-sc`/`-system-chrome` (documented as "use local
+  Chrome for headless mode") does **not** reliably wire to the installed
+  Chromium. Traced katana's actual Go source
+  (`internal/runner/options.go`, `pkg/engine/headless/headless.go`): the
+  crawler engine reads the Chrome binary path from `SystemChromePath`,
+  populated only by the separate `-scp <path>` flag. Confirmed live:
+  `-sc` alone triggered katana downloading its own ~90MB Chromium build
+  from `storage.googleapis.com` (killed after 90s at 84%); `-scp
+  /usr/bin/chromium` resolved it immediately (4s for a 1-page crawl).
+  Both documented headless example commands and the failure-recovery
+  bullet fixed to use `-scp`.
+- **Real katana JSON schema traced from source** (`pkg/navigation/
+  response.go`, `pkg/navigation/request.go`, `pkg/output/result.go`),
+  not assumed: the URL field is `endpoint`, not `url`; `xhr_requests[]`
+  nests per-page under `response`; each XHR entry is the exact same
+  `Request` struct/shape as a normal crawled URL (`method`, `endpoint`,
+  `body`, `headers`) — no separate `params` field, no schema mismatch to
+  normalize between static-crawl and XHR-captured URLs.
+- **Real cost benchmark, not an estimate**: ran static vs. headless
+  crawls of the same real site (`quotes.toscrape.com`, depth 2) inside
+  the built sandbox image. Static: 24.8s / 2369 results. Headless (with
+  the `-scp` fix): **49m 8s / 267 results — ~119x slower, fewer results**.
+  This ruled out "always-on by default" outright and is cited directly
+  in both edited skill files as the reason the headless pass must stay
+  conditional and hard-bounded.
+- **`-ct` (wall-clock cap) confirmed to enforce independently of `-mdp`
+  (page-count cap)** by direct test: `-ct 1m` against the same slow
+  target stopped at 1m0.28s with 59 records, not left running toward a
+  depth/page target. Both are required as a hard default
+  (`-d 2 -ct 5m -mdp 50`) — `-mdp` alone doesn't bound wall-clock on a
+  genuinely slow SPA.
+- **`strix/skills/reconnaissance/asset_discovery.md`** — new
+  "JS-heavy fingerprint check and conditional headless pass" subsection
+  in Application-Layer Recon step 1:
+  - A concrete, deterministic thinness check (strip script/style +
+    tags, measure visible text length and non-script/style/meta/link tag
+    count; `len(text) < 500 or content_tags < 20`) run against the
+    static crawl's already-captured root-page body — no extra fetch.
+    Calibrated against real pages, not guessed: a genuine SPA shell
+    (TodoMVC's React build) measured 86 chars / 10 tags; an ordinary
+    content-rich page (Django-templated) measured 1700+/138+ — a large,
+    unambiguous gap. Tested the exact committed function against both:
+    correctly `False` on the content-rich site, `True` on the real SPA.
+    Documented explicitly as recall-leaning by design (some genuinely
+    tiny static sites will also trip it) since the follow-up is now
+    bounded, not the prior unconditional risk.
+  - The bounded headless follow-up itself
+    (`-hl -scp /usr/bin/chromium -nos -xhr -d 2 -ct 5m -mdp 50`), gated
+    on the fingerprint check, never default.
+  - An XHR-folding snippet normalizing `response.xhr_requests[]` into
+    the same `endpoint`/`method` shape the static crawl already
+    produces (verified: they're the same schema at the source, so this
+    is literally zero-renaming folding, not a translation layer) —
+    tested against a synthetic multi-XHR record to confirm the
+    extraction logic itself is correct.
+  - New "Interactive follow-up for click/type-gated API calls"
+    subsection at the end of step 1: explains why katana's headless mode
+    (generic link-following + synthetic auto-form-fill) can't trigger a
+    real search query, "load more" click, or filter selection the way a
+    judged `agent_browser` interaction can — confirmed complementary,
+    not redundant, by reading katana's headless engine source
+    (`AutomaticFormFill` is generic, not semantically aware). Explicit
+    agent instruction, not automatic per-UI-pattern triggering, capped
+    at 2-3 interactive elements per host per the user's request.
+
+**Not yet done**: differential/mutation testing's cross-cutting
+methodology and a dedicated rate-limit/timing-bypass module remain
+audit-only findings from this track, not implemented.
+

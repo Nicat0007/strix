@@ -1,6 +1,6 @@
 ---
 name: asset-discovery
-description: Passive asset and attack-surface discovery via certificate transparency, TLS SAN pivoting, passive DNS, and ASN/IP enumeration to find hosts beyond subdomain brute force
+description: Passive asset and attack-surface discovery via certificate transparency, TLS SAN pivoting, passive DNS, and ASN/IP enumeration, plus application-layer crawling, deep JS analysis (source maps, hidden routes, secrets, dev-flags), endpoint/parameter mapping, and attack-queue prioritization
 ---
 
 # Asset Discovery
@@ -8,6 +8,10 @@ description: Passive asset and attack-surface discovery via certificate transpar
 Most engagements start from a small seed (one domain, one org name) but the real attack surface is far larger: forgotten hosts, staging/internal-named services, acquisitions, and infrastructure that never appears in a wordlist. Build a broad, deduplicated inventory using passive intelligence — certificate transparency, TLS certificate metadata, passive DNS, and ASN/IP data — then collapse it into a probed, classified attack surface. The aim is coverage and pivoting: every certificate, DNS record, and IP is a lead to more assets.
 
 Only use this skill when all subdomains and related assets of the target are in scope — broad discovery pulls in hosts far beyond the seed.
+
+Consolidation gets you a live, classified host — that is an entry point, not the attack surface. See **Application-Layer Recon** below to go past the host and map its endpoints, parameters, and hidden content.
+
+Before or alongside the pipeline below, also run `dorking` — it needs only the seed, costs no traffic to the target's own infrastructure, and often produces the single highest-value finding of the engagement (a live committed credential).
 
 ## Attack Surface
 
@@ -54,7 +58,7 @@ CT logs record nearly every publicly-trusted certificate. Query by domain (match
 
 ## Recommended Tooling
 
-These tools are available in the sandbox and are pipeline-friendly with JSON output:
+These tools are available in the sandbox and are pipeline-friendly with JSON output. Write every output file under `/workspace/recon/` (e.g. `/workspace/recon/subs.jsonl`) — it is the shared inventory location other agents read from instead of re-running discovery (see `coordination/root_agent.md`).
 
 - **`subfinder`** — passive subdomain aggregation across many sources incl. CT: `subfinder -d example.com -all -recursive -silent -oJ -o subs.jsonl`
 - **`httpx`** — live probing plus cert/SAN grab in one pass: `httpx -l hosts.txt -tls-grab -json` (see methodology).
@@ -104,15 +108,194 @@ For ASN-owned ranges, sweep IPs directly with `naabu`/`httpx` and read served ce
    - Dangling DNS / unclaimed provider resources → `subdomain_takeover`
    - Cloud consoles/metadata surfaces → `aws` / `gcp` / `kubernetes`
 
+## Application-Layer Recon
+
+Consolidation hands you a live, classified host. Don't stop there — for every in-scope host worth attacking, crawl it, extract what its JS reveals, probe for known paths and specs, brute-force what's still hidden, and pull hidden parameters out of anything dynamic. Then rank the result into a queue instead of handing over a flat list. Write this phase's output under `/workspace/recon/` alongside the host inventory, same as above.
+
+### 1. Crawl & JS Extraction
+
+This is where the disproportionate value is on modern JS-heavy targets (Next.js/React/Angular) — a room101-class lead (a `developmentCode` OTP leak, hardcoded credentials) comes from this step, not from running the same scanners every other tool runs. Crawl first, then treat the deep dive below as mandatory, not optional polish.
+
+- Crawl each host with `katana`, JS-aware: `katana -u https://host.tld -d 3 -jc -jsl -kf all -ct 10m -fsu -c 10 -p 10 -rl 50 -j -o crawl/host.jsonl` (see `tooling/katana.md`).
+- Run `gospider -s https://host.tld -d 3 -c 10 -t 20` as a second pass on hosts where katana output looks thin.
+- `~/tools/JS-Snooper/js_snooper.sh` and `~/tools/jsniper.sh/jsniper.sh` automate a first-pass sweep per domain — treat their output as a starting inventory, not the finish line.
+
+**JS-heavy fingerprint check and conditional headless pass**
+
+The crawl above is static — it never executes JS, so it never sees an API
+call a SPA only fires at runtime (on page load, scroll, or client-side
+routing). A real headless pass catches those, but it is not cheap: a
+direct depth-2 headless crawl of an ordinary, non-heavy site measured
+**119x slower than the equivalent static crawl** (49 minutes vs. 25
+seconds) in testing. Making headless the default for every host would
+make recon unusable on anything but a tiny target — so run it only when
+a cheap, deterministic signal says the static crawl likely missed
+something, and keep it hard-bounded even then.
+
+- After the static crawl, test each host's root-page response body
+  (already captured in `crawl/host.jsonl`, no extra fetch needed) with a
+  concrete thinness check — strip `<script>`/`<style>` content and all
+  remaining tags, then measure what visible text is left, and separately
+  count non-script/style/meta/link opening tags:
+  ```python
+  import re
+
+  def is_js_heavy(body: str) -> bool:
+      text = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", body, flags=re.S | re.I)
+      text = re.sub(r"<[^>]+>", " ", text)
+      text = re.sub(r"\s+", " ", text).strip()
+      content_tags = len(re.findall(
+          r"<(?!script|style|meta|link|br|hr|noscript)[a-zA-Z][^>]*>", body, flags=re.I
+      ))
+      return len(text) < 500 or content_tags < 20
+  ```
+  Calibrated against real pages: a genuine SPA shell (TodoMVC's React
+  build) measured 86 chars / 10 tags; an ordinary content page (a
+  Django-templated site) measured 1700+ chars / 138+ tags — the
+  thresholds sit well inside that gap. The check is deliberately
+  recall-leaning: a handful of genuinely tiny static sites (not SPAs)
+  will also cross it and get the follow-up pass below — that's an
+  acceptable, intentional tradeoff, since the follow-up is now
+  hard-bounded rather than the unconditional multi-hour risk it would
+  otherwise be.
+- When a host trips the check, run one bounded headless follow-up —
+  never unconditionally:
+  ```
+  katana -u https://host.tld -hl -scp /usr/bin/chromium -nos -xhr \
+    -d 2 -ct 5m -mdp 50 -silent -j -o crawl/host_headless.jsonl
+  ```
+  `-ct 5m` is a hard wall-clock cap enforced independently of `-mdp` —
+  confirmed by direct testing (a `-ct 1m` run against a slow target
+  stopped at 1m0s with 59 records, not left running to a depth/page
+  target). `-mdp 50` bounds page count on top of that; neither alone is
+  enough on a genuinely slow SPA, both together are what makes this safe
+  to run unattended. The `-scp` path (not `-sc`) is required to actually
+  use the sandbox's installed Chromium — see `tooling/katana.md`.
+- Fold `response.xhr_requests[]` from the headless output into the same
+  endpoint inventory the static crawl feeds, using the same `endpoint`
+  key katana already uses for both — they're the same underlying schema
+  (`xhr_requests` entries are literally the same `Request` type as a
+  normal crawled URL), so no field-renaming or second schema is needed:
+  ```python
+  import json
+  from pathlib import Path
+
+  for line in Path("crawl/host_headless.jsonl").read_text().splitlines():
+      rec = json.loads(line)
+      page_url = (rec.get("request") or {}).get("endpoint", "")
+      for xhr in ((rec.get("response") or {}).get("xhr_requests") or []):
+          print(json.dumps({
+              "endpoint": xhr.get("endpoint"),
+              "method": xhr.get("method"),
+              "body": xhr.get("body"),
+              "source": f"headless_xhr:{page_url}",
+          }))
+  ```
+  Append this alongside the static crawl's own records — downstream
+  steps (Parameter Discovery, the attack queue) read one consistent
+  `endpoint`/`method` shape regardless of which pass found the URL.
+
+**Source map extraction**
+- Probe every `.js` file for a trailing `//# sourceMappingURL=` comment, and try `<file>.js.map` directly even when the comment is absent — maps are frequently deployed but the reference stripped
+- A recovered `.map` reconstructs original filenames, comments, and unminified source (any source-map consumer, or walk the `sources`/`sourcesContent` fields with `jq` directly) — grep the reconstructed tree exactly like a whitebox checkout
+- Next.js specifically ships `_next/static/<build-id>/_buildManifest.js` and per-route chunks under `_next/static/chunks/` — pull the build manifest to enumerate every route Next.js knows about, including ones with no visible link in the rendered UI
+
+**Hidden endpoint/route extraction**
+- Parse every JS bundle, not just the entry point, for path-shaped string literals: `/api/`, `/admin/`, `/internal/`, `/v1/`, `/graphql`, UUID-shaped segments — a regex sweep beats reading, but read the surrounding code for anything that looks gated
+- Framework route tables are a goldmine: React Router route arrays, Next.js `pages`/`app` manifests, Angular route modules — these enumerate the application's *intended* full route set, including routes never linked from the nav
+- **Client-only-gated routes are the highest-value find here**: a route rendered behind `if (user.role === 'admin')` in JS with no corresponding server-side check is a live BFLA lead — the frontend enforces it, nothing else may. Record every such route and hand it to `vulnerabilities/broken_function_level_authorization.md`'s verb/endpoint enumeration; don't just note it and move on
+
+**Secret and config hunting**
+- Grep for API-key-shaped strings, cloud credential patterns, Firebase config objects (`apiKey`/`authDomain`/`projectId` blocks), JWT secrets, and hardcoded basic-auth credentials — the same pattern catalog as `dorking.md`'s GitHub dork list, applied to shipped JS instead of git history
+- Feed every candidate through `trufflehog filesystem <path> --results=verified` or `gitleaks detect --source <path>` (both already in the sandbox) for live-credential confirmation before treating anything as more than a lead
+- A client-side Firebase/Supabase/Stripe-publishable-style key isn't inherently a secret — confirm which key type you're looking at (check `technologies/firebase.md`/`technologies/supabase.md`) before assuming exposure; report confirmed secrets per `vulnerabilities/information_disclosure.md`'s triage rubric
+
+**Feature-flag, debug-mode, and dev-artifact discovery**
+- Grep for flag-shaped identifiers: `isDebug`, `debugMode`, `testMode`, `devMode`, `staging`, `mock`, `bypassAuth`, `skipVerification`, `developmentCode` — this exact class of string is what surfaced the room101 OTP-leak lead, so run it as a named, systematic search every time, not a lucky grep
+- Commented-out code blocks and dead branches (`// TODO`, `/* disabled for prod */`, unreachable `if (false)` guards) often reveal a feature or bypass path that still exists server-side even though the client no longer exposes it
+- Any flag that looks like it toggles a verification/auth requirement is worth testing directly against the API regardless of what the current UI shows — the flag proves the *existence* of a code path even if the client no longer triggers it
+
+**Client-side trust assumptions**
+- Price/total/tax computation done in JS and merely displayed, not recomputed server-side on submit — a lead for `vulnerabilities/business_logic.md`'s Numeric and Currency section
+- Role/permission checks (`canEdit`, `isOwner`, `hasAccess`) that gate UI rendering only — a lead for `vulnerabilities/idor.md`/`broken_function_level_authorization.md`
+- Input validation (length, format, allowed values) enforced only in a form component — a lead for injection classes once the same field is sent directly to the API
+- Every trust assumption found here is a **lead**, not a finding: it says what the frontend expects the backend to enforce, not that the backend fails to. Test it server-side before recording anything beyond `record_coverage`
+
+**Interactive follow-up for click/type-gated API calls**
+- Both crawls above are automatic and blind — neither understands that a
+  search box needs a real query, a "load more" button needs a click, or
+  a filter dropdown needs a real selection to reveal the API call behind
+  it. Katana's headless mode auto-fills forms with synthetic values; it
+  does not perform meaningful, semantically-aware interaction — that gap
+  is what this step exists to close.
+- After the crawls, read the rendered page (`agent-browser snapshot -i`,
+  see `tooling/agent_browser.md`) for interactive elements that plausibly
+  gate a hidden API call — search inputs, pagination/"load more"
+  controls, filter/sort dropdowns, modals — and drive up to **2-3** of
+  the highest-value ones per host with network capture around the
+  interaction:
+  ```
+  agent-browser open https://host.tld
+  agent-browser network har start
+  agent-browser snapshot -i
+  agent-browser fill @e3 "<realistic query>"
+  agent-browser press Enter
+  agent-browser wait --load networkidle
+  agent-browser network har stop /workspace/recon/host_interactive.har
+  ```
+- This is a deliberate, agent-judged step, not an automatic trigger for
+  every UI pattern found — blindly clicking everything on every host is
+  its own budget risk. Pick the 2-3 elements most likely to gate real
+  backend calls (a working search box beats a "subscribe to newsletter"
+  button), and record what you skipped via `record_coverage` so the
+  choice is visible, not silent.
+
+A secret is only reported once verified live or clearly valid (per `analysis/counterevidence.md`) — a dead/rotated key is `open_proof_gap`, not a finding. A client-side-only route or trust assumption is a lead to test server-side, never a finding by itself. Every extracted endpoint, route, secret, and flag is a new asset regardless — feed it back into the inventory, not into a scratch note.
+
+### 2. Known Paths & API Specs
+
+- Probe fixed high-signal paths on every live host: `httpx -l hosts.txt -path /robots.txt,/sitemap.xml,/.well-known/security.txt,/swagger.json,/openapi.json,/api-docs,/graphql -sc -title -silent -j -o known_paths.jsonl`.
+- `-kf all` in step 1 already covers `robots.txt`/`sitemap.xml`-linked discovery; treat this probe as the targeted complement, not a replacement.
+- Found a spec → load `custom/api_spec_testing.md` and drive the API from its schema. Found `/graphql` → load `protocols/graphql.md`.
+
+### 3. Content Discovery
+
+- Fuzz hosts that show a CMS/framework fingerprint or thin crawl output: `ffuf -w wordlist.txt -u https://host.tld/FUZZ -mc 200,204,301,302,307,401,403 -ac -t 20 -rate 50 -noninteractive -of json -o ffuf_host.json` (see `tooling/ffuf.md`).
+- `dirsearch -u https://host.tld -e php,html,js,json` for a fast broad sweep when no specific wordlist angle exists yet.
+- Calibrate wordlist and depth to what the host actually is (fingerprinted tech, paths already found) — one huge generic wordlist against every host in a large inventory burns budget and buries real hits in noise.
+
+### 4. Parameter Discovery
+
+- On endpoints that look dynamic or DB-backed (query strings, form posts, REST resource paths), run `arjun -u <url>` (GET) and `arjun -u <url> -m POST` to surface parameters absent from the crawl.
+- This is a recon step, not just an IDOR trick — hidden parameters (`debug`, `role`, `format`, `redirect`, `filter`) reshape an endpoint's whole attack surface before any specific vuln class is tested.
+- Feed every discovered parameter back into the endpoint inventory with its source (crawl, JS, or `arjun`).
+
+### 5. Prioritization — Attack Queue
+
+Turn the flat endpoint/host inventory into an ordered queue, not a routing table:
+
+1. **Auth/session surfaces and API endpoints** - login, token issuance/refresh, session management, any discovered API base path. Highest value: breaking these has the widest blast radius.
+2. **Admin panels and user-data CRUD** - anything reading/writing another user's data or exposing privileged functionality.
+3. **Anything with parameters reaching a backend** - endpoints with query/body/path parameters from the crawl or `arjun`, especially ones touching IDs, file paths, or format/type switches.
+4. **Static/marketing content** - lowest priority; worth only a pass for information disclosure.
+
+Within a tier, boost hosts with a newly-issued cert or CT diff (from the passive phase) and hosts whose probe response (title/tech/status) changed since the last pass — fresh or actively-deployed code is more likely to carry undiscovered bugs. Hand exploitation agents this ranked list, not the flat classified-host list from Consolidation & Probing step 3.
+
+### Coverage Discipline
+
+Every crawled endpoint, extracted JS route, and discovered parameter not actually exploited in this pass is a candidate, not a dead end. Record it with `record_coverage(outcome="needs_follow_up")` as an `open_proof_gap` (see `analysis/counterevidence.md`) instead of letting it silently drop when crawl output is large. A big inventory with no follow-up trail is exactly how real endpoints get missed.
+
 ## Testing Methodology
 
 1. **Seed** - domains, org/legal names, known IPs, email domains, code-host org
-2. **Certificate transparency** - pull all logged certs per seed domain and org name (crt.sh, Censys/Shodan)
-3. **SAN/CN extraction** - parse every Subject CN and SAN with `httpx -tls-grab` (or `openssl s_client`); each new name is a new seed
-4. **Passive DNS** - resolve forward and reverse with `dig`; harvest historical records
-5. **ASN/IP mapping** - `whois` the netblock/ASN to expand owned ranges, then sweep for live hosts
-6. **Active TLS pivot** - `httpx -tls-grab` on live IPs/ports to grab SANs missing from public CT
-7. **Consolidate & probe** - dedupe, `httpx` probe, classify, and route to specialists
+2. **Dorking** - GitHub/Google dorking and historical URL mining from the seed alone, in parallel with the steps below (see `dorking`)
+3. **Certificate transparency** - pull all logged certs per seed domain and org name (crt.sh, Censys/Shodan)
+4. **SAN/CN extraction** - parse every Subject CN and SAN with `httpx -tls-grab` (or `openssl s_client`); each new name is a new seed
+5. **Passive DNS** - resolve forward and reverse with `dig`; harvest historical records
+6. **ASN/IP mapping** - `whois` the netblock/ASN to expand owned ranges, then sweep for live hosts
+7. **Active TLS pivot** - `httpx -tls-grab` on live IPs/ports to grab SANs missing from public CT
+8. **Consolidate & probe** - dedupe, `httpx` probe, classify, and route to specialists
+9. **Application-layer recon** - crawl and extract JS, probe known paths/specs, content-discover, mine parameters, then rank into an attack queue (see Application-Layer Recon)
 
 ## Validation
 
