@@ -19,6 +19,7 @@ from rich.panel import Panel
 from rich.text import Text
 
 from strix.config import load_settings
+from strix.core.inputs import is_whitebox_targets
 from strix.utils.api_spec import detect_spec_format
 
 
@@ -1305,8 +1306,8 @@ def assign_workspace_subdirs(targets_info: list[dict[str, Any]]) -> None:
 
 
 def is_whitebox_scan(targets_info: list[dict[str, Any]]) -> bool:
-    """True iff any target is a local source tree (whitebox / source-aware)."""
-    return any(t.get("type") == "local_code" for t in targets_info or [])
+    """True iff any target puts source code in the sandbox (local dir or repo)."""
+    return is_whitebox_targets(targets_info)
 
 
 def collect_local_sources(targets_info: list[dict[str, Any]]) -> list[dict[str, Any]]:

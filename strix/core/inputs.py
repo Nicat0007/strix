@@ -190,6 +190,24 @@ def build_root_task(scan_config: dict[str, Any]) -> str:
     return task
 
 
+# Target types that put source code in the sandbox: a user-supplied local
+# directory, or a repository Strix clones itself. Both are source-aware /
+# whitebox scans — a cloned repo is source code same as a mounted directory,
+# it just came from a URL instead of a path.
+_WHITEBOX_TARGET_TYPES = frozenset({"local_code", "repository"})
+
+
+def is_whitebox_targets(targets: list[dict[str, Any]] | None) -> bool:
+    """True iff any target puts source code in the sandbox (local dir or repo).
+
+    Single source of truth for the whitebox/source-aware decision — used both
+    to select the run's actual skill set (``core/runner.py``) and for
+    telemetry (``interface/utils.py``'s ``is_whitebox_scan``). Keeping one
+    function means the two can't drift apart the way they previously did.
+    """
+    return any(t.get("type") in _WHITEBOX_TARGET_TYPES for t in targets or [])
+
+
 def build_scope_context(scan_config: dict[str, Any]) -> dict[str, Any]:
     authorized: list[dict[str, str]] = []
     value_keys = {

@@ -39,6 +39,7 @@ from strix.core.inputs import (
     build_root_task,
     build_scan_targets,
     build_scope_context,
+    is_whitebox_targets,
     make_model_settings,
 )
 from strix.core.paths import run_dir_for, runtime_state_dir
@@ -343,7 +344,7 @@ async def run_strix_scan(
     try:
         targets = scan_config.get("targets") or []
         scan_mode = str(scan_config.get("scan_mode") or "deep")
-        is_whitebox = any(t.get("type") == "local_code" for t in targets)
+        is_whitebox = is_whitebox_targets(targets)
         diff_scope = scan_config.get("diff_scope")
         is_diff_scoped = bool(isinstance(diff_scope, dict) and diff_scope.get("active"))
         skills = list(scan_config.get("skills") or [])

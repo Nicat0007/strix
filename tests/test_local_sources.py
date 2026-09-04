@@ -8,12 +8,14 @@ from typing import Any
 
 import pytest
 
+from strix.core.inputs import is_whitebox_targets
 from strix.interface.scan_setup import attach_workspace_mount
 from strix.interface.utils import (
     check_mountable_dir,
     collect_local_sources,
     dedupe_local_targets,
     infer_target_type,
+    is_whitebox_scan,
     read_target_list_file,
 )
 from strix.runtime.session_manager import build_bind_mounts
@@ -43,6 +45,51 @@ def test_collect_local_sources_leaves_a_clone_writable() -> None:
     assert sources == [
         {"source_path": "/clone", "workspace_subdir": "clone", "protect_metadata": False}
     ]
+
+
+def _web_target(url: str = "https://example.com") -> dict[str, Any]:
+    return {"type": "web_application", "details": {"target_url": url}, "original": url}
+
+
+def _repo_target(cloned_repo_path: str = "/clone") -> dict[str, Any]:
+    return {
+        "type": "repository",
+        "details": {
+            "target_repo": "https://github.com/acme/widget",
+            "cloned_repo_path": cloned_repo_path,
+        },
+        "original": "https://github.com/acme/widget",
+    }
+
+
+def test_a_cloned_repository_target_is_whitebox() -> None:
+    """A `--target https://github.com/...` scan must get source-aware treatment.
+
+    Regression test: this previously checked only `local_code`, so a cloned
+    GitHub repository silently never triggered whitebox mode even though its
+    code is mounted into the sandbox exactly like a local_code target.
+    """
+    assert is_whitebox_targets([_repo_target()]) is True
+    assert is_whitebox_scan([_repo_target()]) is True
+
+
+def test_a_local_code_target_is_whitebox() -> None:
+    assert is_whitebox_targets([_local_target("/code")]) is True
+    assert is_whitebox_scan([_local_target("/code")]) is True
+
+
+def test_a_web_only_scan_is_not_whitebox() -> None:
+    assert is_whitebox_targets([_web_target()]) is False
+    assert is_whitebox_scan([_web_target()]) is False
+
+
+def test_a_mixed_repo_and_web_scan_is_whitebox() -> None:
+    assert is_whitebox_targets([_web_target(), _repo_target()]) is True
+
+
+def test_no_targets_is_not_whitebox() -> None:
+    assert is_whitebox_targets([]) is False
+    assert is_whitebox_targets(None) is False
 
 
 def test_check_mountable_dir_accepts_a_project_dir(tmp_path: Path) -> None:
