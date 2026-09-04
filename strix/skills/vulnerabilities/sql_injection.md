@@ -158,6 +158,23 @@ SQLi remains one of the most durable and impactful vulnerability classes. Modern
 4. Provide reproducible requests that differ only in the injected fragment
 5. Where applicable, demonstrate defense-in-depth bypass (WAF on, still exploitable via variant)
 
+## Impact Escalation
+
+A confirmed oracle is the start of exploitation, not the end. Push every
+`confirmed` finding to a concrete result before filing:
+
+- Extract at least one full sensitive record (e.g. a real user's email +
+  password hash/token), not just `version()`/`database()`/`current_user()`
+  or a boolean/timing oracle.
+- Where a write is injectable, demonstrate one real effect (role flip, auth
+  bypass) rather than stopping at "UPDATE appears injectable".
+
+If a real constraint blocks deeper extraction — no readable user table,
+destructive-only write path, rate limiting that makes bulk extraction
+impractical in scope — record `open_proof_gap` / `needs_follow_up` with
+the specific blocker in `evidence`. Do not file metadata-only and move on,
+and never invent data or claim extraction you did not perform.
+
 ## False Positives
 
 - Generic errors unrelated to SQL parsing or constraints

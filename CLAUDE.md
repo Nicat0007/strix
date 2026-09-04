@@ -1637,3 +1637,33 @@ not via a commit scoped to describe them. Left as-is per user decision
 (git history not rewritten); noting it here for anyone reading `git log`
 later.
 
+## 20. TWO UNDER-LOGGED EDITS FROM THE §8/§9 BATCH (implemented, now committed)
+
+Found during the same git-hygiene audit as §19's note: `scan_modes/quick.md`
+and `vulnerabilities/sql_injection.md` carried uncommitted edits with no
+matching CLAUDE.md section. Confirmed via matching mtimes (identical to
+the second) that both were written in the same 2026-08-30 batch as §8's
+`target_identity.py` hoist and §9's `is_whitebox_targets()` fix — real
+prior work, just never written up for these two files specifically, not
+a foreign or unrequested change.
+
+- `scan_modes/quick.md` — shallow-recon cost discipline for Quick mode:
+  caps application-layer recon to one fast `katana -jc` pass at depth
+  ≤2 (no `-jsl`/gospider second pass, no ffuf/dirsearch sweep, `arjun`
+  only on already-flagged high-value endpoints), instructs reusing
+  `/workspace/recon/` instead of re-crawling, adds deep JS
+  extraction/secondary crawlers to the existing skip-list, and caps
+  subagent creation at 2-3 concurrent, consolidated by check rather than
+  one per vuln class.
+- `sql_injection.md` — a new `## Impact Escalation` section mirroring
+  the pattern already used in `idor.md`/`broken_function_level_authorization.md`:
+  a confirmed oracle is the start of exploitation, not the end; requires
+  extracting a real sensitive record (not just `version()`/`database()`/
+  `current_user()` or a bare oracle) before filing, and a demonstrated
+  real effect for write-capable SQLi rather than stopping at "UPDATE
+  appears injectable"; genuine extraction blockers go to
+  `open_proof_gap`/`needs_follow_up`, never filed metadata-only.
+
+Committed together as their own small commit (grouped only because both
+were small and under-logged, not because they're related to each other).
+

@@ -27,6 +27,8 @@ Optimize for fast feedback on critical security issues. Skip exhaustive enumerat
 - Map authentication and critical user flows
 - Identify exposed endpoints and entry points
 - Skip deep content discovery—test what's immediately accessible
+- If application-layer recon runs at all, keep it shallow: one fast `katana -jc` pass at depth ≤2, no `-jsl`/`gospider` second pass, no `ffuf`/`dirsearch` sweep, `arjun` only on the one or two endpoints already flagged as high-value — see `reconnaissance/asset_discovery.md`
+- Reuse anything already sitting in `/workspace/recon/` from an earlier phase or agent instead of re-crawling
 
 ## Phase 2: High-Impact Targets
 
@@ -42,6 +44,7 @@ Test in priority order:
 Skip for quick scans:
 - Exhaustive subdomain enumeration
 - Full directory bruteforcing
+- Deep JS extraction and secondary crawlers (`-jsl`, `gospider`) — one fast crawl pass is enough
 - Low-severity information disclosure
 - Theoretical issues without working PoC
 
@@ -61,7 +64,7 @@ When a strong primitive is found (auth weakness, injection point, internal acces
 - Use terminal for targeted scans with fast presets (e.g., nuclei with critical/high templates only)
 - Use proxy to inspect traffic on key endpoints
 - Skip extensive fuzzing—use targeted payloads only
-- Create subagents only for parallel high-priority tasks
+- Create subagents only for parallel high-priority tasks, capped at 2-3 concurrent agents; consolidate related checks into one agent rather than one per vuln class
 
 ## Mindset
 
