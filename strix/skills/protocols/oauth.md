@@ -7,6 +7,12 @@ description: OAuth 2.0 and OIDC flow security testing covering redirect manipula
 
 OAuth and OIDC failures often enable account takeover, token theft, and cross-client token confusion. Treat every redirect, client identifier, and token exchange as an authorization boundary — not a convenience layer.
 
+Enterprise B2B SSO is frequently **SAML**, not OAuth/OIDC — a target may
+run one, the other, or both (an OIDC bridge in front of a SAML IdP is
+common). See `saml.md` for SAML 2.0's own failure modes (XML signature
+wrapping, assertion replay, recipient/audience confusion); do not assume
+this file's coverage extends to it.
+
 ## Attack Surface
 
 **Flows**

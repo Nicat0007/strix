@@ -55,6 +55,11 @@ Cross-site request forgery abuses ambient authority (cookies, HTTP auth) across 
 - Identify `Access-Control-Allow-Origin` and `-Credentials`
 - Overly permissive CORS is not a CSRF fix and can turn CSRF into data exfiltration
 - Test per-endpoint CORS differences; preflight vs simple request behavior can diverge
+- This recon step is the trigger, not the methodology — a reflected origin
+  alongside `Access-Control-Allow-Credentials: true` is a distinct,
+  higher-value bug class (credentialed cross-origin data theft, not a
+  write-side CSRF) with its own bypass catalog and proof discipline; see
+  `cors_misconfiguration.md`
 
 ## Key Vulnerabilities
 

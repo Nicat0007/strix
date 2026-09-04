@@ -80,7 +80,7 @@ Information leaks accelerate exploitation by revealing code, configuration, iden
 ### Cross-Origin Signals
 
 - Referrer leakage: missing/weak referrer policy leading to path/query/token leaks to third parties
-- CORS: overly permissive Access-Control-Allow-Origin/Expose-Headers revealing data cross-origin; preflight error shapes
+- CORS: overly permissive Access-Control-Allow-Origin/Expose-Headers revealing data cross-origin; preflight error shapes — full methodology and proof discipline (reflected-origin-with-credentials, null-origin, regex/prefix/suffix bypass, cache poisoning) in `cors_misconfiguration.md`
 
 ### File Metadata
 

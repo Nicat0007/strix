@@ -98,6 +98,11 @@ _SKILL_PHRASINGS: dict[str, tuple[str, ...]] = {
         "cross origin state",
     ),
     "business_logic": ("business logic", "logic flaw"),
+    "cors_misconfiguration": (
+        "cors",
+        "cross origin resource sharing",
+        "cross origin misconfiguration",
+    ),
     "csrf": ("csrf", "cross site request forgery"),
     "header_injection": ("header injection", "host header", "crlf"),
     "http_request_smuggling": ("request smuggling", "desync"),
