@@ -255,8 +255,25 @@ earlier phases.
 
 **Goal:** re-running the same target should not start from zero — endpoints,
 auth model, techniques tried/failed, and findings/leads should carry over
-between separate `strix` invocations. **No code has been written yet** —
-this is the audit map for when a design is approved.
+between separate `strix` invocations. The target-memory-store design below
+(read/write hooks in `build_root_task()`, `~/.strix/target_memory/`,
+possible new agent-facing tools) is **not implemented** — still awaiting a
+design approval.
+
+**Correction (found during a later git-hygiene audit, git-status-2026-09-04):**
+Option A's stated first step — "hoist that helper out to a shared
+location" — **is done and committed** (same batch as §9's
+`is_whitebox_targets()` fix, committed together as their own commit on
+2026-09-04): `strix/utils/target_identity.py` now holds
+`target_identity()`/`local_directory()`/`remote_authority()`, and
+`strix/tools/threat_model/tools.py` was refactored to import from it
+rather than keep its own private copies (verified complete, not
+mid-refactor — no leftover duplicate helpers, every call site updated,
+`tests/test_target_identity.py` 10/10, broader
+`-k "threat_model or target_identity"` sweep 39/39). This is groundwork
+Option A would need either way (a shared identity function usable outside
+`threat_model/tools.py`), not a decision to proceed with Option A itself —
+the memory-store design proper is still unimplemented and unapproved.
 
 **Key findings from reading `strix/report/state.py`, `strix/report/writer.py`,
 `strix/core/paths.py`, `strix/core/runner.py`, `strix/core/execution.py`,
@@ -1599,4 +1616,24 @@ mechanism that actually combines it with the three vuln skills, not new
 code.
 
 Skill-only change, no Python/Dockerfile touched.
+
+**Commit-hygiene correction (found during a later git-status audit,
+git-status-2026-09-04):** the commit made for this track, `209563c`, is
+broader than its message describes. Staging `idor.md` and
+`broken_function_level_authorization.md` for their cross-reference
+paragraphs staged and committed each **whole file** — which silently
+swept in pre-existing uncommitted content that predates this track:
+`idor.md`'s diff in `209563c` also carries all of §13/§14's
+Multi-Tenant/Tenant-Boundary Testing section, the Alternate-API-Versions
+and Nested/Second-Order-Reference additions, and an `## Impact Escalation`
+section; `broken_function_level_authorization.md`'s diff also carries
+§5's original framework-specific-gaps/verb-enumeration/Chaining-Attacks
+work plus its own `## Impact Escalation` section. `mass_assignment.md`'s
+commit was clean (no prior uncommitted content existed for it). Nothing
+was lost or overwritten — the bundled content is real, already-described
+work — but §5's and §13/§14's "implemented"/"committed" status for those
+specific pieces only became true in git incidentally, via this commit,
+not via a commit scoped to describe them. Left as-is per user decision
+(git history not rewritten); noting it here for anyone reading `git log`
+later.
 
