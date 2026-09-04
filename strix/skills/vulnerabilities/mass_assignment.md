@@ -7,6 +7,14 @@ description: Mass assignment testing for unauthorized field binding and privileg
 
 Mass assignment binds client-supplied fields directly into models/DTOs without field-level allowlists. It commonly leads to privilege escalation, ownership changes, and unauthorized state transitions in modern APIs and GraphQL.
 
+The Parameter Strategies and Shape Variants below are the candidate values
+for this vuln class — the request/diff/classify loop that turns "send a
+mutated field" into "did anything change, and does it count as signal" is
+shared with `broken_function_level_authorization.md` and `idor.md` and
+lives in `analysis/parameter_mutation_testing.md`; load it alongside this
+skill when running a systematic sweep rather than reinventing the
+before/after comparison per field.
+
 ## Attack Surface
 
 - REST/JSON, GraphQL inputs, form-encoded and multipart bodies

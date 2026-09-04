@@ -47,6 +47,7 @@ else under `strix/` and `strix/skills/` takes effect immediately (see §8).
 - `fix_verification.md` — Fix Verification: confirming a patched/fixed finding is actually closed.
 - `severity_calibration.md` — Severity Calibration: how to score/rate finding severity consistently.
 - `source_aware_discovery.md` — Source-Aware Discovery: using available source code to guide black-box testing.
+- `parameter_mutation_testing.md` — shared three-way (Control/Boundary/Adversarial) mutation set and diff-and-classify engine behind `mass_assignment.md`/`broken_function_level_authorization.md`/`idor.md`; not auto-loaded (like the other three above except counterevidence/severity_calibration — see `_resolve_skills()`), load it explicitly alongside those skills for a systematic sweep.
 
 **cloud/** — cloud provider security testing:
 - `aws.md`, `azure.md`, `gcp.md`, `kubernetes.md` — provider-specific test methodology.
@@ -1492,4 +1493,110 @@ work), not assumed:**
 **Not yet done**: differential/mutation testing's cross-cutting
 methodology and a dedicated rate-limit/timing-bypass module remain
 audit-only findings from this track, not implemented.
+
+## 19. DIFFERENTIAL/MUTATION TESTING — SHARED ENGINE (implemented)
+
+Closed the "Differential/mutation testing" gap noted but not acted on in
+§18: `mass_assignment.md`'s Shape Variants, `broken_function_level_authorization.md`'s
+verb sweep, and `idor.md`'s Enumeration Techniques each independently
+generated candidate values *and* independently invented their own
+before/after comparison step — the second half duplicated across three
+files with no shared definition of "changed" or "noise." Design was
+reviewed and corrected before implementation (schema and family-grouping
+boundary shown and confirmed first, per the user's request, since a
+schema change after three consumers depend on it is expensive):
+
+**New file** `strix/skills/analysis/parameter_mutation_testing.md` — three
+layers:
+- **Layer A (three-way mutation set)** — Control (resent, not reused, to
+  surface response nondeterminism up front), Boundary mutation (T: a
+  same-class structural/type change that stays inside the same
+  authorization boundary — a negative control), Adversarial mutation (X:
+  the actual boundary-crossing candidate). Diffing X against C and
+  comparing that to T's diff is what proves X caused a change T didn't,
+  rather than "any modification changes something here." Ties directly to
+  `counterevidence.md`'s existing negative-control guidance ("send the
+  payload that should work... show it is blocked, while a benign variant
+  succeeds") — T is that benign variant, generated up front.
+- **Layer B (shared diff record)** — one schema every consumer reads the
+  same way: `status`/`size`/`headers`/`body_shape`
+  (`same_key_set`/`array_length_deltas`/`type_changes`/`value_deltas`)/
+  `timing`, plus a deterministic `signal_class` (`status`/`structural`/
+  `value`/`none`/`inconclusive`) computed with no LLM call. Noise
+  threshold: `beyond_noise = |delta_bytes| > max(32, 0.02*baseline_bytes)`
+  (absolute floor for tiny bodies, proportional for large ones); a fixed
+  header ignore-list (`Date`/`Set-Cookie`/`X-Request-Id`/`X-Trace-Id`/
+  `ETag`/`Server-Timing`) strips volatile fields before diffing rather
+  than after; timing is never a standalone signal below 3 samples per
+  side; a `429`/`503` status gets one backoff retry before classification
+  instead of an immediate verdict. Caller contract: Layer C declares an
+  `expectations` map per mutated field (`unchanged`/
+  `reflects_mutation:<value>`/`bounded:<min>,<max>`) so `out_of_expected_range`
+  is driven by what the vuln-class generator actually expects, not a
+  guess by the diff engine. `signal_class` never carries a security
+  verdict — that reading stays with the calling skill, and
+  `counterevidence.md` still gates whether it becomes `confirmed`.
+- **Layer C (unchanged)** — explicitly documents that the per-class value
+  catalogs stay exactly where they already were
+  (`mass_assignment.md`/`idor.md`/`broken_function_level_authorization.md`/
+  `business_logic.md`'s white-box QA methodology); this file generates no
+  candidate values itself.
+
+**Family Sweep** — endpoints are grouped before sweeping, by
+`(static path segments, path-parameter positions, endpoint kind)` where
+kind ∈ `{item, collection-list, collection-create, action}`; verb-within-kind
+and content-type are swept inside a family, not used to split it. Worked
+example against a synthetic `/orders`/`/invoices`/`/users/{id}/orders`
+API caught and corrected a real boundary error in the original
+sketch: same parameter arity is not enough to group two endpoints
+(`/orders/{id}` and `/invoices/{id}` share shape but not resource
+identity — kept as separate families); a trailing static verb segment
+(`/invoices/{id}/void`) splits an endpoint into `action` kind even though
+it shares a prefix with an `item`-kind sibling. The example also
+surfaced, and explicitly did not try to solve inside the family-grouping
+mechanism, a same-object/different-route case
+(`/orders/{id}` vs `/users/{id}/orders/{orderId}` addressing the same
+order) — flagged as `idor.md`'s existing "Alternate API Versions and
+Channels" pattern, run as its own cross-family worklist item instead of
+being folded into family grouping's scope.
+
+**`mutation_candidates.md`** — a **separate** artifact from
+`entry_points.md`, not a new section in it, because `entry_points.md` is
+white-box-only (built inside the sandbox by `custom/source_aware_sast.md`
+from static scanning) while mutation testing has to run in black-box
+scans too. Lives at `/workspace/recon/mutation_candidates.md`, following
+the existing `/workspace/recon/` reuse convention from
+`reconnaissance/asset_discovery.md`; built from the crawled/enumerated
+endpoint inventory in black-box mode, cross-referenced against
+`entry_points.md`'s route rows when white-box source is also available
+(never a third redundant list). One row per family — key, members, kind,
+open vs already-run T/X candidates and their last `signal_class` — read
+and updated (not duplicated) by whichever of the three vuln-testing
+agents runs a family's sweep, the same shared-ledger discipline
+`counterevidence.md` already requires of `record_coverage`.
+
+**Cross-references added** (one paragraph each, matching the existing
+axis-separation cross-reference style from §14): `mass_assignment.md`,
+`broken_function_level_authorization.md`, `idor.md` each now point to
+`analysis/parameter_mutation_testing.md` for the shared mechanics,
+stating explicitly that their own catalogs (Shape Variants, verb
+enumeration, Enumeration Techniques) remain the candidate-value source.
+
+**Verified before committing**: `analysis/*` is an internal skill
+category excluded from bare-name `load_skill`/`get_all_skill_names()`
+lookup by design (confirmed in §11) — an initial bare-name check was a
+false alarm, not a bug; `load_skills(["analysis/parameter_mutation_testing",
+"mass_assignment", "broken_function_level_authorization", "idor"])`
+resolves all four with no collisions, and each of the three vuln files'
+loaded content contains the new cross-reference paragraph pointing at
+`parameter_mutation_testing.md`. `tests/test_skill_dir_extension.py`
+(20 tests) still passes unchanged. Not wired into `_resolve_skills()`'s
+always-loaded set (deliberately — matches `source_aware_discovery`/
+`fix_verification`'s precedent of being explicit-load-only, not
+counterevidence/severity_calibration's always-on treatment); the root
+agent's spawn instructions for a mutation-sweep-focused subagent are the
+mechanism that actually combines it with the three vuln skills, not new
+code.
+
+Skill-only change, no Python/Dockerfile touched.
 

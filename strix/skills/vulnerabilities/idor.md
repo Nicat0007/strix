@@ -15,6 +15,22 @@ Object-level authorization failures (BOLA/IDOR) lead to cross-account data expos
 - Cross-tenant access: break isolation boundaries in multi-tenant systems
 - Cross-service access: token or context accepted by the wrong service
 
+This file's home axis is horizontal (object-level, BOLA) — a caller
+reaching an object they should not. Systematic vertical-access depth
+(actor×action matrix, per-role token sweep, framework-specific
+enforcement gaps) lives in `broken_function_level_authorization.md`;
+treat the vertical technique below as the object-reference variant of
+that axis, not a substitute for it. Run both skills together whenever the
+target has any privilege tiers at all.
+
+The Enumeration Techniques below generate this class's candidate object
+references; the three-way mutation set and diff-and-classify mechanics
+that turn a swapped ID into a signal are shared with
+`broken_function_level_authorization.md` and `mass_assignment.md`, in
+`analysis/parameter_mutation_testing.md` — load it alongside this skill,
+and see its Family Sweep section for grouping endpoints (including the
+nested/second-order case below) before sweeping them individually.
+
 **Reference Locations**
 - Paths, query params, JSON bodies, form-data, headers, cookies
 - JWT claims, GraphQL arguments, WebSocket messages, gRPC messages
@@ -81,6 +97,48 @@ Object-level authorization failures (BOLA/IDOR) lead to cross-account data expos
 - Fetch or mutate those objects directly
 - Pagination/cursor manipulation to skip filters and pull other users' pages
 
+### Alternate API Versions and Channels
+
+The same object is frequently reachable through more than one route — a
+legacy endpoint kept for backward compatibility, a mobile-specific API
+surfaced only in app-bundle traffic, an internal/partner API fronting the
+same data store — and object-level authorization is re-implemented (or
+skipped) independently on each one. This is BFLA's "legacy vs v2, mobile
+vs web" pattern applied to the object dimension rather than the action
+dimension: the object binding check itself, not just the action gate, can
+differ per route.
+
+- Diff the same object fetch across every version/channel discovered in
+  recon (`/api/v1/orders/{id}` vs `/api/v2/orders/{id}`, web API vs the
+  endpoints a mobile app bundle or network capture reveals) using an ID
+  the caller does not own
+- Weaker versions are usually the older ones, but not always — a newer
+  mobile-first API rushed to ship can skip a check the mature web API has
+  had for years
+- Treat each version/channel as its own candidate in the Subject × Object
+  × Action matrix, not a rerun of the same test
+
+### Nested and Second-Order Object References
+
+Authorization checked on a parent object does not imply it was re-checked
+on a child reached by walking a relationship from that parent — the
+classic shape is a caller who is legitimately allowed to fetch object A
+(their own), where A contains a reference to object B (`A.attachmentId`,
+`A.commentId`, `A.linkedInvoiceId`), and the endpoint that resolves B from
+that reference trusts "the caller could read A" as sufficient proof they
+can read B, without independently checking B's own ownership.
+
+- Look for endpoints shaped like `GET /orders/{orderId}/items/{itemId}`,
+  `GET /projects/{projectId}/files/{fileId}`, or any nested-resource route
+  — then swap only the *child* ID while keeping a parent ID the caller
+  legitimately owns; a check that only validates the parent leaves the
+  child unbound
+- Also test the reverse: swap the *parent* ID to one the caller doesn't
+  own while keeping a child ID they do — reveals whether the binding runs
+  in the direction the developer assumed
+- Multi-hop references (A references B references C) compound this —
+  don't stop validating at the first hop once one level checks out
+
 ### Job/Task Objects
 
 - Access job/task IDs from one user to retrieve results for another (`export/{jobId}/download`, `reports/{taskId}`)
@@ -108,6 +166,23 @@ query IDOR {
 }
 ```
 
+Mutations are the write-side of the same bug and get less scrutiny than
+queries — a resolver that correctly scopes reads by caller identity often
+forgets to re-scope the object argument a mutation writes to:
+
+```graphql
+mutation TransferOwnership {
+  updateDocument(id: "RG9jdW1lbnQ6OTAx", input: { content: "pwned" }) {
+    id
+  }
+}
+```
+
+Sent with a token that owns a *different* document — if `id` resolves
+without checking it against `context.user`, this is write-capable BOLA,
+not a read. Chase the same class through `delete*`, `update*`,
+`transfer*`, `share*`, and `revoke*` mutations named in the schema.
+
 ### Microservices & Gateways
 
 - Token confusion: token scoped for Service A accepted by Service B due to shared JWT verification but missing audience/claims checks
@@ -116,9 +191,12 @@ query IDOR {
 
 ### Multi-Tenant
 
-- Probe tenant scoping through headers, subdomains, and path params (`X-Tenant-ID`, org slug)
-- Try mixing org of token with resource from another org
-- Test cross-tenant reports/analytics rollups and admin views which aggregate multiple tenants
+Tenant isolation is cross-tenant IDOR at the account/organization level
+rather than the individual-object level — the full systematic methodology
+(tenant-ID enumeration, admin-confusion, signup collision, existence
+leaks) is consolidated in `## Multi-Tenant / Tenant-Boundary Testing`
+below; this entry marks it as a Key Vulnerabilities candidate the same as
+every other row in this section.
 
 ### WebSocket
 
@@ -135,6 +213,81 @@ query IDOR {
 
 - Webhooks/callbacks referencing foreign objects (e.g., `invoice_id`) processed without verifying ownership
 - Third-party importers syncing data into wrong tenant due to missing tenant binding
+
+## Multi-Tenant / Tenant-Boundary Testing
+
+Cross-tenant access is BOLA at the organization/account level instead of
+the individual-object level — the same checked-vs-used binding failure,
+scoped one level up. This section is the consolidated methodology; the
+pieces it draws together are the `### Multi-Tenant` entry above (per-object
+tenant scoping), `business_logic.md`'s `### Multi-Tenant Isolation` and
+`## Authenticated Multi-Account Abuse` (tenant-scoped counters/credits,
+collusion patterns once you hold two real accounts), and
+`coordination/root_agent.md`'s account-provisioning phase (obtaining the
+two tenants this section needs before testing starts). Reference those for
+their existing depth rather than re-deriving it here — this section adds
+the patterns none of them cover yet.
+
+**Proof discipline**: everything below needs two real tenants, the same
+way `idor.md`'s core methodology needs two principals — a single-tenant
+session can only observe a boundary claim, never disprove it. Provision
+both before this pass (see `reconnaissance/account_provisioning.md`); a
+same-tenant retest proves nothing.
+
+### Tenant-ID Enumeration via Shared Infrastructure
+
+- Resource IDs (order numbers, ticket IDs, invoice numbers) that increment
+  across the *whole platform* rather than per-tenant leak the existence
+  and approximate volume of other tenants purely from your own ID's
+  position in the sequence — walk the ID space adjacent to your own
+  tenant's objects and check what a shared-infrastructure ID actually
+  scopes to
+- This is a reconnaissance/existence-leak finding on its own
+  (`information_disclosure.md`-adjacent) even before any single object is
+  successfully read — record it as a lead and continue toward object
+  access, don't stop at "IDs are sequential"
+
+### Tenant-Admin vs Global-Admin Confusion
+
+- Many multi-tenant apps have two distinct admin roles: a tenant-scoped
+  admin (manages their own org) and a platform/global admin (manages every
+  tenant) — test whether a tenant-admin token can reach global-admin
+  endpoints, or whether an endpoint gated only by "is this caller *an*
+  admin" (any tenant) rather than "is this caller *this tenant's* admin"
+  grants unintended cross-tenant reach
+- This is the tenant-scoped instance of BFLA's Actor × Action matrix — run
+  it as its own row, not folded into the object-access tests above, since
+  the bug is in the role check rather than the object binding
+
+### Self-Service Signup Tenant Collision
+
+- Where tenant creation is self-service (sign up, get a new org), test
+  whether choosing an identifier (org slug, subdomain, company name/domain
+  used for auto-join) that collides with or is a variant of an existing
+  tenant's identifier grants any unintended association — auto-join-by-email-domain
+  features are the highest-value target here: register a new tenant using
+  an email domain that an existing customer's employees use, and check
+  whether the new signup is offered to join, or silently joined to, the
+  existing tenant
+- Also test near-miss collisions deliberately (trailing whitespace,
+  case variation, homoglyph/Unicode lookalikes, a slug that normalizes to
+  an existing one) against whatever uniqueness check the signup flow
+  actually performs
+
+### Cross-Tenant Search / Autocomplete Existence Leaks
+
+- Typeahead, autocomplete, and search-suggest endpoints are frequently
+  implemented against a shared index and filtered late (or not at all) —
+  query for a string you know belongs to another tenant's data (a
+  guessed/leaked customer name, email domain, project name) and check
+  whether suggestions surface it, even if the full record is correctly
+  blocked on direct fetch
+- This mirrors `idor.md`'s general "list/search endpoints are rich ID
+  seeders" principle (see Pro Tips), applied specifically across the
+  tenant boundary rather than within one tenant's own object space —
+  existence confirmation alone is a real finding (scored per
+  `analysis/severity_calibration.md`'s tenant-boundary guidance) even
+  before any content is retrieved
 
 ## Bypass Techniques
 
@@ -170,7 +323,7 @@ query IDOR {
 ## Testing Methodology
 
 1. **Build matrix** - Subject × Object × Action matrix (who can do what to which resource)
-2. **Obtain principals** - At least two: owner and non-owner (plus admin/staff if applicable)
+2. **Obtain principals** - At least two: owner and non-owner (plus admin/staff if applicable); two distinct tenants if `## Multi-Tenant / Tenant-Boundary Testing` applies
 3. **Collect IDs** - Capture at least one valid object ID per principal from list/search/export endpoints
 4. **Cross-channel testing** - Exercise every action (R/W/D/Export) while swapping IDs, tokens, tenants
 5. **Transport variation** - Test across web, mobile, API, GraphQL, WebSocket, gRPC
@@ -183,6 +336,20 @@ query IDOR {
 3. Prove cross-channel consistency: same unauthorized access via at least two transports (e.g., REST and GraphQL)
 4. Document tenant boundary violations (if applicable)
 5. Provide reproducible steps and evidence (requests/responses for owner vs non-owner)
+
+## Impact Escalation
+
+A status-code or existence diff confirms the oracle, not the finding. Push
+every `confirmed` finding to actual cross-user data before filing:
+
+- Retrieve and show real content from another principal's object (not just
+  a 200 vs 403, or a size/title diff).
+- For write-capable IDOR, demonstrate the state change taking effect
+  (before/after read of the modified object).
+
+If the object genuinely has no readable sensitive content, or extraction
+needs a session/scope you don't hold, record `open_proof_gap` /
+`needs_follow_up` with the blocker named — don't file on the oracle alone.
 
 ## False Positives
 
