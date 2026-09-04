@@ -36,9 +36,31 @@ Coverage target per repository:
 
 ## Agent Delegation Guidance
 
-- Keep child agents specialized by vulnerability/component as usual.
-- For source-heavy subtasks, prefer creating child agents with `source_aware_sast` skill.
-- Use source findings to shape payloads and endpoint selection for dynamic testing.
+- **Partition by entry-point-map slice, not by vulnerability class.** One
+  agent's mandate should span every relevant sink/guard class (injection,
+  access control, file handling, SSRF, etc. — see whatever framework
+  skill's own catalog applies) for the entry points it's assigned, not one
+  agent per class. Splitting by class instead of by slice multiplies agent
+  count — and duplicated context cost — without adding coverage; see
+  `coordination/root_agent.md`'s "Consolidate Related Classes."
+- **Every subagent reads `/workspace/.source-aware/entry_points.md` before
+  doing anything else, and does not re-run the baseline scanners or
+  re-derive the map from source.** The map is the assignment, not a
+  suggestion to double-check by starting over.
+- Scale beyond one agent only when the map is large enough to need it, and
+  split by dividing its rows across agents of the *same* mandate shape
+  (agent A gets rows 1-N, agent B gets N+1-2N) — never by spinning up a
+  second agent for a different vulnerability class over the same rows.
+- Keep a **separate, dedicated agent for business-logic QA** (see
+  `vulnerabilities/business_logic.md`) working from the map's
+  "logic-bearing functions" list — that reasoning is different in kind
+  from sink-tracing and deserves its own focused pass rather than being
+  folded into the injection/access-control agent's mandate.
+- Prefer creating child agents with the `source_aware_sast` skill (and
+  whatever framework skill matched, e.g. `wordpress`) for source-heavy
+  subtasks.
+- Use source findings — including business-logic hypotheses from the QA
+  agent — to shape payloads and endpoint selection for dynamic testing.
 
 ## Validation Guardrails
 
