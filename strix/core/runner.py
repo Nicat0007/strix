@@ -263,6 +263,7 @@ async def run_strix_scan(
     coordinator.set_snapshot_path(agents_path)
 
     from strix.tools.coverage.tools import hydrate_coverage_from_disk
+    from strix.tools.negative_knowledge.tools import hydrate_negative_knowledge_from_disk
     from strix.tools.notes.tools import hydrate_notes_from_disk
     from strix.tools.threat_model.tools import hydrate_threat_models_from_disk
     from strix.tools.todo.tools import hydrate_todos_from_disk
@@ -271,6 +272,12 @@ async def run_strix_scan(
     hydrate_notes_from_disk(state_dir)
     hydrate_coverage_from_disk(state_dir)
     hydrate_threat_models_from_disk(state_dir)
+    # Cross-scan store, fixed path (not this run's state_dir) — see
+    # strix/tools/negative_knowledge/tools.py. Skipped entirely when
+    # disabled so a run against confidential code never even reads the
+    # cache, let alone writes to it.
+    if settings.negative_knowledge.enabled:
+        hydrate_negative_knowledge_from_disk()
 
     root_id: str | None = None
     if is_resume:

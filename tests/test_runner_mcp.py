@@ -34,6 +34,7 @@ def _settings() -> Any:
             extra_headers=None,
         ),
         runtime=types.SimpleNamespace(max_context_images=3),
+        negative_knowledge=types.SimpleNamespace(enabled=False),
     )
 
 

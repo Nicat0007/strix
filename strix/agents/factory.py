@@ -30,6 +30,10 @@ from strix.tools.coverage.tools import list_coverage, record_coverage, update_co
 from strix.tools.finish.tool import finish_scan
 from strix.tools.load_skill.tool import load_skill
 from strix.tools.mcp import call_mcp, describe_mcp, list_mcps
+from strix.tools.negative_knowledge.tools import (
+    query_negative_knowledge,
+    record_negative_knowledge,
+)
 from strix.tools.notes.tools import (
     create_note,
     delete_note,
@@ -574,6 +578,8 @@ _BASE_TOOLS: tuple[Tool, ...] = (
     record_coverage,
     update_coverage,
     list_coverage,
+    query_negative_knowledge,
+    record_negative_knowledge,
     get_threat_model,
     save_threat_model,
     amend_threat_model,

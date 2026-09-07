@@ -120,6 +120,20 @@ class TelemetrySettings(BaseSettings):
     enabled: bool = Field(default=True, alias="STRIX_TELEMETRY")
 
 
+class NegativeKnowledgeSettings(BaseSettings):
+    """Persistent cross-scan ruled-out cache (``~/.strix/negative_knowledge.json``).
+
+    Off switch for a run against confidential/regulated code: disabling
+    skips both reading and writing the cache, so nothing about this run's
+    codebase — not even a generic pattern description — is persisted past
+    it, and no prior run's entries are consulted either.
+    """
+
+    model_config = _BASE_CONFIG
+
+    enabled: bool = Field(default=True, alias="STRIX_NEGATIVE_KNOWLEDGE")
+
+
 class IntegrationSettings(BaseSettings):
     model_config = _BASE_CONFIG
 
@@ -152,5 +166,8 @@ class Settings(BaseSettings):
     runtime: RuntimeSettings = Field(default_factory=RuntimeSettings)
     context: ContextSettings = Field(default_factory=ContextSettings)
     telemetry: TelemetrySettings = Field(default_factory=TelemetrySettings)
+    negative_knowledge: NegativeKnowledgeSettings = Field(
+        default_factory=NegativeKnowledgeSettings
+    )
     integrations: IntegrationSettings = Field(default_factory=IntegrationSettings)
     viewer: ViewerSettings = Field(default_factory=ViewerSettings)

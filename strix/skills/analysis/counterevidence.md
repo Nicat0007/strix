@@ -142,6 +142,51 @@ Negative controls make a `ruled_out` much stronger: send the payload that
 benign variant succeeds. That distinguishes "the control works" from "the
 endpoint is broken/unreachable for unrelated reasons".
 
+## Negative Knowledge — A Prior From a Past Scan, Never a Skip
+
+`record_coverage`'s `ruled_out`/`no_issue_found` entries live only in this
+scan's ledger and disappear after `finish_scan`. Some of them describe
+something narrower than that: not "this target is safe" but "this
+framework's own API, used this way, is structurally safe" — a fact that
+recurs, verbatim in mechanism if not in code, across every codebase in
+that family. `query_negative_knowledge`/`record_negative_knowledge`
+(`strix/tools/negative_knowledge/`) are the persistent, cross-scan version
+of this discipline.
+
+**When to check.** Once you have read enough of a candidate to name the
+concrete API/function calls involved in the safety mechanism you are
+weighing — not before, since the lookup key depends on those exact names —
+call `query_negative_knowledge(framework, vulnerability_class,
+mechanism_signature)`. Do this before spending a full trace on a shape
+that looks like a known pattern (a specific serializer, a specific SDK
+call, a specific nonce/capability idiom), not instead of a trace on
+anything that looks novel.
+
+**What a hit means.** An exact match is a strong prior, exactly like a
+`ruled_out` entry left by a teammate earlier in this same scan — **it
+narrows the check, it does not replace it.** Do one fast, targeted
+confirmation that the same guard is genuinely present, unmodified, and on
+this specific reachable path, then close it per the normal rules above.
+Do not skip straight to `ruled_out` on the hit alone: a plugin can always
+differ from the pattern in a way that matters — a check the prior instance
+had that this one is missing, a sibling route (`_nopriv`, a legacy alias,
+an internal caller) that reaches the same sink without the guard the
+matched instance relied on. A "related" (same framework/vulnerability
+class, different mechanism) result is weaker still — background context
+about what else this framework/class combination has produced, never a
+signal about the candidate in front of you.
+
+**When to promote a verdict there.** Only when the reasoning itself, not
+just the verdict, would transfer to a different codebase built on the
+same framework — "this call, used this way, is safe" rather than "this
+deployment happens to be fine" (an IP allowlist, a firewall rule, a config
+value unique to this target belongs in `record_coverage`'s `evidence`,
+never in `record_negative_knowledge`'s `mechanism`). This is the same
+judgment call as everything else in this file: a `ruled_out` you cannot
+justify as a named, path-verified control does not belong in the
+per-scan ledger, and a mechanism you cannot justify as framework-generic
+does not belong in the cross-scan cache either.
+
 ## Before You File a Report
 
 Run this pass on every finding before calling

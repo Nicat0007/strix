@@ -44,6 +44,7 @@ async def test_persistent_rate_limit_stops_gracefully(
             extra_headers=None,
         ),
         runtime=types.SimpleNamespace(max_context_images=3),
+        negative_knowledge=types.SimpleNamespace(enabled=False),
     )
     monkeypatch.setattr(runner, "load_settings", lambda: settings)
     monkeypatch.setattr(runner, "configure_sdk_model_defaults", lambda _settings: None)
