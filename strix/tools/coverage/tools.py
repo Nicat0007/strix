@@ -27,6 +27,8 @@ from typing import Any
 
 from agents import RunContextWrapper, function_tool
 
+from strix.tools.agent_metrics.tools import record_activity_tick
+
 
 logger = logging.getLogger(__name__)
 
@@ -242,6 +244,7 @@ def _record_impl(
             return {"success": False, "error": "Could not allocate a coverage entry id"}
         _coverage_storage[entry_id] = entry
         _persist_locked()
+    record_activity_tick(agent_id)
     logger.info(
         "Coverage recorded: id=%s outcome=%s surface=%s",
         entry_id,
@@ -304,6 +307,7 @@ def _update_impl(
         if agent_name:
             existing["agent_name"] = agent_name
         _persist_locked()
+    record_activity_tick(agent_id)
     logger.info(
         "Coverage updated: id=%s %s -> %s surface=%s",
         key,

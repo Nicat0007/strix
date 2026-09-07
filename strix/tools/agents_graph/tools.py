@@ -50,14 +50,17 @@ def _agent_roi_suffix(agent_id: str) -> str:
       regardless of which specific tool it was.
     - coverage: ``strix.tools.coverage.tools.get_coverage_entries()``,
       filtered by ``agent_id`` (already recorded on every entry).
+    - possible_stagnation (only shown once triggered): tool calls since
+      this agent's last recorded coverage/file-summary activity, past a
+      fixed threshold — see ``strix.tools.agent_metrics.tools.possible_stagnation``.
 
     This is information only — no threshold here decides anything, and
     nothing calls this to auto-stop an agent. See
     ``coordination/root_agent.md``'s "Reading Agent ROI" for how a root
-    agent is expected to use these numbers.
+    agent is expected to use these numbers, including this one.
     """
     from strix.report.state import get_global_report_state
-    from strix.tools.agent_metrics.tools import get_tool_call_count
+    from strix.tools.agent_metrics.tools import get_tool_call_count, possible_stagnation
     from strix.tools.coverage.tools import get_coverage_entries
 
     parts: list[str] = []
@@ -102,6 +105,16 @@ def _agent_roi_suffix(agent_id: str) -> str:
         )
     except Exception:
         logger.debug("could not resolve coverage counts for agent %s", agent_id, exc_info=True)
+
+    try:
+        stagnation = possible_stagnation(agent_id)
+        if stagnation is not None:
+            parts.append(
+                f"possible_stagnation: {stagnation} tool calls since last new "
+                "coverage/file-summary entry"
+            )
+    except Exception:
+        logger.debug("could not resolve stagnation signal for agent %s", agent_id, exc_info=True)
 
     return " — " + " | ".join(parts) if parts else ""
 

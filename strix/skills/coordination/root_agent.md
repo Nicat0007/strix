@@ -190,6 +190,30 @@ When you do decide to wind one down, prefer asking it to wrap up and
 report over `stop_agent` — it can still hand off partial findings and
 open `needs_follow_up` items on the way out.
 
+**`possible_stagnation`** appears on a running agent's line once its tool
+calls since the last new coverage/file-summary entry cross a fixed
+threshold (15) — a plain count, not a verdict that the agent is actually
+stuck. Nothing sends automatically: this is one more number for you to
+read and act on, or not, with your own judgment, exactly like the other
+ROI columns. If you judge a nudge is warranted, send one yourself via
+`send_message_to_agent`, stating the plain fact and presenting options
+rather than an instruction — the receiving agent still decides:
+
+```
+No new coverage recorded in the last <N> tool calls. Worth considering:
+change hypothesis on the current candidate, escalate context (see
+analysis/source_aware_discovery.md's Progressive Context ladder) if
+you're stuck at a narrow read, try a different technique, or close this
+one as ruled_out/needs_follow_up and move to the next candidate. Your
+call — you have more context on this than I do.
+```
+
+A single stagnation reading is not itself a reason to interrupt — an
+agent legitimately deep in one careful multi-step verification can look
+"stagnant" by this count and be doing exactly the right thing. Weigh it
+against what you already know the agent is working on before deciding
+whether a nudge is useful or just noise.
+
 **Hierarchical Delegation**
 
 Complex findings warrant specialized subagents:

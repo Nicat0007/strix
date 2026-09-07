@@ -38,6 +38,8 @@ from typing import Any
 
 from agents import RunContextWrapper, function_tool
 
+from strix.tools.agent_metrics.tools import record_activity_tick
+
 
 logger = logging.getLogger(__name__)
 
@@ -143,7 +145,12 @@ def _query_impl(*, file_path: str, content_hash: str) -> dict[str, Any]:
 
 
 def _record_impl(
-    *, file_path: str, content_hash: str, summary: str, agent_name: str | None = None
+    *,
+    file_path: str,
+    content_hash: str,
+    summary: str,
+    agent_name: str | None = None,
+    agent_id: str | None = None,
 ) -> dict[str, Any]:
     error = _validate_hash(content_hash)
     if error:
@@ -178,6 +185,7 @@ def _record_impl(
                 existing["recorded_by"] = agent_name
             created = False
         _persist_locked()
+    record_activity_tick(agent_id)
     logger.info(
         "file context cache %s: %s (%s)",
         "recorded" if created else "updated",
@@ -263,11 +271,15 @@ async def record_file_summary(
             instead of re-reading and re-interpreting the file itself.
     """
     agent_name = _caller_agent_name(ctx)
+    inner = ctx.context if isinstance(ctx.context, dict) else {}
+    raw_agent_id = inner.get("agent_id")
+    agent_id = raw_agent_id if isinstance(raw_agent_id, str) else None
     result = await asyncio.to_thread(
         _record_impl,
         file_path=file_path,
         content_hash=content_hash,
         summary=summary,
         agent_name=agent_name,
+        agent_id=agent_id,
     )
     return json.dumps(result, ensure_ascii=False, default=str)

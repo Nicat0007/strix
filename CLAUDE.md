@@ -2655,3 +2655,71 @@ this track.
 
 **Committed** as its own commit.
 
+### Piece 9 — Stop-Loss / Marginal Information Gain: implemented and committed
+
+Turns Piece 8's per-agent metrics from report-only into an execution
+signal — never an automatic kill, an injected observation the root
+agent's own judgment (already established in Piece 8's "Reading Agent
+ROI") acts on or not.
+
+**Research finding**: coverage entries and `file_context_cache` entries
+carry no tool-call-count stamp, so "N consecutive tool calls with zero
+new coverage" wasn't measurable — but the fix stayed small and touched
+neither module's schema. New parallel tracker in the already-existing
+`agent_metrics` module: `_last_activity_tick: dict[agent_id, int]`,
+updated by `record_activity_tick(agent_id)` — called from
+`coverage/tools.py`'s `_record_impl` **and** `_update_impl` (resolving
+someone's `needs_follow_up` is real progress too, not just a fresh
+entry) and from `file_context_cache/tools.py`'s `_record_impl`. Also
+confirmed "hypothesis status change" and "new endpoint discovered" from
+the original goal statement aren't trackable anywhere today (no
+per-agent-timestamped event for either) — not adding tracking for
+those, staying inside what already exists.
+
+**A real gap found while wiring, not assumed away**: `file_context_cache/tools.py`'s
+`_record_impl` only ever tracked `agent_name`, never `agent_id` — fine
+for Piece 6's own purposes, but `agent_metrics` is keyed on `agent_id`
+(matching `record_tool_call`'s key), so the wiring was impossible until
+`_record_impl` and the `record_file_summary` tool wrapper both gained an
+`agent_id` parameter, extracted the same way `coverage.py` already does.
+Small, backward-compatible addition, not a design change.
+
+**Built**:
+- `agent_metrics/tools.py` — `record_activity_tick(agent_id)`,
+  `tool_calls_since_new_info(agent_id)` (current tool-call count minus
+  the last activity tick), `possible_stagnation(agent_id)` (the count
+  when it's `>= _STAGNATION_THRESHOLD`, else `None`).
+  `_STAGNATION_THRESHOLD = 15` — a documented, non-configurable first
+  guess, same precedent as the ROI window's "10 minutes": revisitable
+  once there's real usage to calibrate against, deliberately not a
+  settings toggle for a single nudge constant.
+- `agents_graph/tools.py`'s `_agent_roi_suffix()` — one more field,
+  `possible_stagnation: N tool calls since last new coverage/file-summary
+  entry`, shown only once triggered.
+- `root_agent.md`'s "Reading Agent ROI" — extended with what a nudge
+  should say if the root agent judges one is warranted: the plain fact
+  plus the four options from the design (change hypothesis / escalate
+  context per Piece 5's ladder / try a different technique / close as
+  `ruled_out`/`needs_follow_up`), delivered via the **already-existing**
+  `send_message_to_agent` tool — no new injection mechanism invented.
+  Explicitly notes a single stagnation reading isn't itself a reason to
+  interrupt: one careful multi-step verification of a single candidate
+  can look "stagnant" by this count and be exactly the right thing to be
+  doing.
+
+**Verified**: `tests/test_stop_loss.py` (7 tests) — below-threshold not
+flagged, the exact requested scenario (15+ tool calls with no activity
+correctly flagged, and correctly keeps climbing past the threshold),
+a fresh coverage entry resets the counter to 0/`None`, resolving a
+`needs_follow_up` via `update_coverage` also counts as activity, a new
+file-summary entry also counts as activity, `_agent_roi_suffix()` shows
+the flag only once triggered, and `record_activity_tick(None)` never
+raises. Related suites (`test_coverage_tool.py`,
+`test_file_context_cache_tool.py`, `test_agent_roi.py`,
+`test_skill_dir_extension.py`, 52 tests) confirmed unaffected by the new
+wiring. Full suite re-run clean: 1257 passed (up 7), 1 skipped, same
+pre-existing/unrelated `test_pricing.py` failure as every other piece in
+this track.
+
+**Committed** as its own commit.
+
