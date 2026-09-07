@@ -15,6 +15,29 @@ Run tools from repo root and store outputs in a dedicated artifact directory:
 mkdir -p /workspace/.source-aware
 ```
 
+## Framework and Technology Detection Triggers (Reference)
+
+This file already documents several "detect X, load skill Y" triggers,
+each explained in full where it's contextually relevant later on. This
+is a quick index gathering all of them in one place, so a scanning agent
+doesn't have to remember or re-read every later section to know what's
+available — it changes nothing about whether or how a trigger fires, and
+it is not authoritative: a target's real technology not appearing here
+is not evidence that no relevant skill exists.
+
+| Detect | Load | Documented in |
+|---|---|---|
+| `Plugin Name:`/`Theme Name:` header, WP-style `readme.txt`, a `wp-content/plugins\|themes/` path, or heavy `add_action`/`add_filter`/`$wpdb`/`register_rest_route` usage | `wordpress` | "Resolution and Namespace Risks" below |
+| A bare `npx`/`npm exec` command that could fall back from a missing local package to a public registry name | `npx_confusion` | "Resolution and Namespace Risks" below |
+| Abandoned domains, provider resources, package namespaces, update URLs, mail identities, telemetry, or control endpoints in source, images, firmware, or history | `infrastructure_lifecycle` | "Resolution and Namespace Risks" below |
+| Model-provider SDKs, prompt templates, retrieval/vector stores, tool/function calling, model loading, training/feedback pipelines, or token/agent-loop accounting | `llm_applications` | "Converting Static Signals Into Exploits" below |
+| Overloaded fields, multiple parsers, normalization steps, or protocol translation across shared middleware/proxy/plugin boundaries | `semantic_confusion` | "Cross-Component Semantic Mapping" below |
+| A known-CVE dependency finding from the trivy/SCA pass | `dependency_cve_scanning` | "Secret and Supply Chain Coverage" below |
+
+New triggers get a row here the same time they get documented below —
+keep this index and its section in sync rather than letting one drift
+ahead of the other.
+
 ## Baseline Coverage Bundle (Recommended)
 
 Run this baseline once per repository before deep narrowing. Both

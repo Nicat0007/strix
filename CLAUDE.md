@@ -2273,3 +2273,126 @@ touched, matching the "documentation only" finding above.
 now implemented, tested, documented, and committed.** None introduced
 an LLM-generated fake-precision score anywhere across any of them.
 
+## 24. CONTEXT CACHE (PIECE 6) + FRAMEWORK-TRIGGER CONSOLIDATION
+    (PIECE 7, DOWNGRADED FROM ORIGINAL SCOPE) — IMPLEMENTED AND COMMITTED
+
+Continuation of the cost-reduction track (§21-§23), three more proposed
+pieces from the same review: Piece 6 (Context Cache), Piece 7 (Adaptive
+Scan), Piece 8 (Token ROI Tracking). Research done first for 6 and 7
+before any code; both findings changed the plan.
+
+**Piece 7 finding, before any design work**: read `_resolve_skills()` in
+`strix/agents/prompt.py` directly. Skill loading is **already fully
+selective** — a small fixed baseline auto-loads (scan mode, tooling,
+`counterevidence`/`severity_calibration`, root/whitebox extras); every
+`vulnerabilities/*.md`/`frameworks/*.md` file loads only via an explicit
+`skills=` list at spawn time, capped at 5 per agent
+(`validate_requested_skills`). There is no code path where an agent gets
+the full ~50-file skill set — the cap makes that structurally
+impossible. Piece 7's stated problem ("avoid loading all ~50+ skill
+files into every agent") does not exist. **Downgraded, not built as
+originally scoped**: no new fingerprint/gating machinery. Instead, a
+much smaller, purely informational consolidation (see below).
+
+**Piece 6 finding**: `custom/source_aware_sast.md`'s Attack Surface
+Compiler (§21 Piece 2) already solves cross-agent duplication for
+*route-shaped* mechanical facts — that pipeline is a deterministic
+script's output, built once, shared by existing convention
+(`coordination/source_aware_whitebox.md`'s "does not re-derive the map
+from source"), so there's nothing to cache there. What it doesn't cover:
+non-route files — shared base classes, utility/trait modules — that
+`analysis/source_aware_discovery.md`'s Progressive Context ladder (§23
+Piece 5) explicitly sends multiple agents into independently when their
+different candidates depend on the same shared helper (the user's own
+example: a multi-agent scan's likely overlapping reads of shared base
+classes). Grepped the whole coordination tree — nothing addresses this;
+`root_agent.md` mentions "redundant work" once, generically, no
+mechanism. Piece 6 is real, scoped narrower than originally framed:
+non-route files specifically, not a re-implementation of what Piece 2
+already solved.
+
+**Piece 6 — implemented.** New module `strix/tools/file_context_cache/tools.py`
+(+ `__init__.py`), mirroring `coverage`/`negative_knowledge`'s
+hydrate/lock/atomic-persist shape but **scoped to this run's own
+`state_dir`** (`{state_dir}/file_context_cache.json`), not
+`negative_knowledge`'s fixed cross-scan `~/.strix/` path — a file
+summary is only trustworthy for as long as this scan's own checkout is
+the one being read, so nothing here should outlive the run. Considered
+reusing `notes/tools.py` — rejected: it's a linear, uuid-keyed, free-text
+ledger with no hash-lookup, so a "does this exact content already have a
+summary" query would mean unenforced substring-scanning for an embedded
+hash.
+
+**Design correction found while specifying it, before any code was
+written** — same discipline as every prior piece in this track: a naive
+version would have the host-side tool open the file itself to hash it,
+but host-side tools run in the host process with no reliable path back
+from the container's `/workspace/...` spelling to a host filesystem
+location. **Fixed**: the calling agent hashes the file itself
+(`sha256sum <file>`, it already has full shell access) and passes the
+digest as an argument — the tool is a pure key-value store with zero
+file I/O of its own, exactly mirroring how `negative_knowledge` takes
+agent-named API tokens rather than deriving a key from file access.
+
+- `query_file_summary(file_path, content_hash)` — exact sha256-hash
+  match, read-only. A hit is keyed on content, not path, so a
+  duplicate/vendored copy at a different location still hits, and one
+  byte of drift correctly misses.
+- `record_file_summary(file_path, content_hash, summary)` — upsert on
+  the same hash (a second confirmation or a refined summary replaces
+  rather than duplicates).
+- `content_hash` is validated as a 64-char lowercase hex string
+  (enforcing sha256 specifically, so every caller's key space aligns) —
+  rejected otherwise with a clear error rather than silently mismatching.
+
+Wired into `analysis/source_aware_discovery.md`'s Progressive Context
+ladder (§23) at exactly rung 5, "Cross-file" — the ladder already names
+the moment an agent is about to read a shared base class/utility module;
+this just adds "check the cache first, record a summary after" at that
+existing decision point rather than inventing a new one.
+`strix/agents/factory.py`'s `_BASE_TOOLS` gains both tools;
+`strix/core/runner.py` gains one more `hydrate_*_from_disk(state_dir)`
+call, unconditional (no settings toggle, unlike `negative_knowledge` —
+this cache never outlives the run, so there's no cross-scan retention
+concern to opt out of).
+
+**Verified**: `tests/test_file_context_cache_tool.py` (7 tests)
+including the exact scenario requested — agent 1 records a summary for
+a shared base class, agent 2 (a different path, identical content)
+queries and gets the cached summary back, `recorded_by`/
+`first_recorded_for_path` intact — plus different-content-same-path
+miss, upsert-not-duplicate, malformed-hash rejection, empty-field
+rejection, disk round-trip, and hash case-insensitivity. Skill file
+loads cleanly (balanced fences). `tests/test_skill_dir_extension.py`
+(20 tests) unchanged. Full suite re-run clean: 1239 passed (up 7 from
+the new test file), 1 skipped, same pre-existing/unrelated
+`test_pricing.py` litellm-alias failure as every other piece in this
+track.
+
+**Piece 7, downgraded scope — implemented.** New
+`## Framework and Technology Detection Triggers (Reference)` section in
+`custom/source_aware_sast.md`, placed right after "Fast Start." A
+6-row table indexing every existing "detect X, load skill Y" trigger
+already documented later in the same file (`wordpress`, `npx_confusion`,
+`infrastructure_lifecycle`, `llm_applications`, `semantic_confusion`,
+`dependency_cve_scanning`) — gathered while grepping the whole skill
+tree for `load_skill(` and `` Load `X` `` phrasing to confirm the list
+is accurate and complete, not guessed. **Purely informational**: no
+enforcement change, no trigger removed or narrowed, each row points back
+to the section that explains it in full — an index, not a replacement.
+Interesting secondary finding: every trigger already lived in this one
+file, not scattered across many different skill files as the original
+framing assumed — the "scattered" problem was really "scattered across
+one file's prose," which a single index still fixes.
+
+**Verified**: skill file loads cleanly (balanced fences, 31126 chars, up
+from ~29.2k), `tests/test_skill_dir_extension.py` unchanged.
+
+**Committed separately** — Piece 6 (new tool + factory/runner wiring +
+`source_aware_discovery.md`) as one commit, the Piece 7 consolidation
+(`source_aware_sast.md` only) as its own commit, since they touch
+disjoint files and are independently revertable.
+
+**Not yet done**: Piece 8 (Token ROI Tracking) — full design already
+approved, implementation next.
+
