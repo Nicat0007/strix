@@ -2209,3 +2209,67 @@ Piece 2's extraction-and-rerun check:
 **Committed** as its own commit — skill-only, no Python/Dockerfile
 changes.
 
+## 23. PROGRESSIVE CONTEXT (PIECE 5) — IMPLEMENTED AND COMMITTED
+
+Final piece of §21/§22's external-architecture-review track — a
+cost-reduction discipline, no new judgment mechanism.
+
+**Research findings, both confirmed rather than assumed:**
+- **No existing "read small, escalate" pattern anywhere in the skill
+  tree.** Grepped for it before writing anything; the only remotely
+  related sentence in the whole repo is `custom/source_aware_sast.md`'s
+  "restrict to changed files first, then expand only when needed" — and
+  that governs which *files* a diff-scoped scan touches, not how much of
+  one file to read. So this wasn't "formalizing scattered existing
+  practice," as the original framing assumed — it needed to be authored
+  fresh, in the tone `analysis/counterevidence.md` already established
+  (targeted-not-exhaustive), not copied from anywhere.
+- **No new tool needed, confirmed by checking `strix/tools/` directly**:
+  there is no dedicated file-read tool in Strix's own tool set at all —
+  every file read an agent makes goes through the sandbox's
+  `exec_command` shell access (`cat`, `sed -n`, `rg -n -A/-B/-C`,
+  `awk`), which already supports an arbitrary windowed read as cheaply
+  as a whole-file one. This piece is documentation only.
+
+**Implemented**: new `## Progressive Context — Read the Minimum First`
+section in `strix/skills/analysis/source_aware_discovery.md` (already
+always-loaded for whitebox scans per §9), placed right after "Instance
+Discipline" since it's about reading mechanics, before "Where the Real
+Control Lives." A 5-rung ladder — route+metadata (free, already in
+`entry_points.md`/`attack_surface.md`) → the enclosing function/route
+body (one windowed read, explicitly reusing §22's `attack_surface.md`
+window when it already exists rather than re-deriving the boundary) →
+caller/callee one hop (not a transitive closure) → whole file →
+cross-file (base class, shared module, middleware/decorator registered
+elsewhere) — with concrete triggers for each escalation (an
+undefined-in-range `self.prop`/bare identifier → whole file; a
+resolved caller/callee not present anywhere in the current file →
+cross-file), and an explicit instruction to **stop** escalating the
+moment the specific question is answered rather than reading further
+"just in case."
+
+Cross-referenced to `parameter_mutation_testing.md`'s "Cost Discipline"
+and `custom/source_aware_sast.md`'s `entry_points.md` (the same
+compute/read-the-cheap-thing-first philosophy already established
+elsewhere in this project) and to `analysis/counterevidence.md`'s
+"confirm *that* call, in *that* context" (the same targeted-not-
+exhaustive discipline, applied here to how much gets read rather than
+what counts as proof).
+
+Scoped explicitly to white-box code-reading, where this skill already
+lives — noted, not silently decided, that the same principle could
+extend to black-box JS-bundle mining in `asset_discovery.md` later.
+
+**Verified**: skill file loads cleanly (balanced fences, 14058 chars,
+up from ~11.4k), `tests/test_skill_dir_extension.py` (20 tests)
+unchanged, full suite re-run clean (1232 passed, 1 skipped, same
+pre-existing/unrelated `test_pricing.py` failure as every other piece
+in this track). Only the one file changed — no Python/Dockerfile
+touched, matching the "documentation only" finding above.
+
+**Committed** as its own commit.
+
+**All five pieces from the external architecture review (§21-§23) are
+now implemented, tested, documented, and committed.** None introduced
+an LLM-generated fake-precision score anywhere across any of them.
+

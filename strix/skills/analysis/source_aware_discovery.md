@@ -40,6 +40,65 @@ the developer knew better, not that the concatenated one is safe.
 concrete implementation. Multi-location findings that don't say which
 line is which force the reader to re-derive your analysis.
 
+## Progressive Context — Read the Minimum First
+
+Every candidate below is a real question about a real location — "is
+this call sanitized," "does this route check ownership," "where does
+this value come from." Answering it does not require the whole file, and
+defaulting to a whole-file read for every candidate burns context on
+material that never gets used, the same waste `parameter_mutation_testing.md`'s
+"Cost Discipline" and `custom/source_aware_sast.md`'s `entry_points.md`
+exist to avoid at the tooling layer. No new tool is needed for this —
+the sandbox shell already reads an arbitrary window (`sed -n 'A,Bp'
+file`, `rg -n -A20 -B5 'pattern'`) as cheaply as it reads a whole file;
+this section is about which of those to reach for first, not a new
+capability.
+
+Escalate one rung at a time, only when the current rung leaves the
+actual question open — and **stop escalating the moment it's answered**.
+Reading further "just in case" after the guard is confirmed present (or
+confirmed absent, on every reachable path) is exactly the exhaustive-by-
+default habit this ladder exists to break; `analysis/counterevidence.md`'s
+"confirm *that* call, with *those* arguments, in *that* context" is
+already this same discipline applied to what counts as proof — this is
+the same discipline applied to how much you read to get there.
+
+1. **Route + metadata** — free. The file, line, matched pattern, and one
+   line of matched text already sitting in `entry_points.md`/
+   `attack_surface.md` from the baseline sweep. No new read at all.
+2. **The relevant function or route body** — one windowed read bounded
+   to the enclosing function or handler. When `attack_surface.md` exists,
+   reuse the window it already computed for this route (the
+   registration-line-to-next-marker range, or the resolved-callback
+   range) rather than re-deriving the boundary yourself.
+3. **Caller/callee, one hop** — not a transitive closure, just the
+   direct callers (`rg -n 'functionName\('`) and the callees whose
+   bodies aren't visible in what you've read so far.
+4. **The whole file.**
+5. **Cross-file** — a base class, a shared helper module, middleware or
+   a decorator registered elsewhere.
+
+**Concrete triggers**, so escalation is a decision, not a habit:
+
+- **Rung 2 → 3**: the function calls something whose behavior is
+  load-bearing for the actual question you're answering (a named
+  sanitizer, guard, or resolver — not a language built-in), and that
+  callee's body isn't visible yet.
+- **Rung 2/3 → 4**: a reference to `self.prop` / `this.prop` / a bare
+  identifier that is not a local variable, parameter, or import visible
+  in the range already read — its definition lives somewhere else in
+  the file (a constructor, a class-level declaration, a sibling method).
+- **Rung 3/4 → 5**: the resolved caller/callee, or the property's
+  defining assignment, is not in this file at all — inherited from a
+  parent class, imported from another module, or installed by
+  middleware/a decorator registered elsewhere.
+
+This ladder is white-box code-reading specifically, where this skill
+already lives. The same "don't slurp everything before you know you
+need it" principle plausibly applies to black-box JS-bundle mining in
+`reconnaissance/asset_discovery.md` too — noted, not decided here, and
+out of scope for this section.
+
 ## Where the Real Control Lives
 
 The most common discovery error is anchoring on the dramatic sink and
