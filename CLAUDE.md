@@ -2556,3 +2556,102 @@ alone (Piece 2's window-direction bug, Piece 3's `signal_class` polarity
 bug, Piece 4's unrecorded object-ownership and unpersisted BFLA-matrix
 gaps, Piece 8's stale-cache bug) — the throughline of the whole track.
 
+## 25. THREE MORE COST/QUALITY PIECES — STOP-LOSS, CHAIN REASONER,
+    PRIORITY QUEUE
+
+A follow-on to §21-§24's track, from further discussion: Piece 9
+(Stop-Loss / Marginal Information Gain — turns Piece 8's metrics into
+an execution signal), Piece 10 (Attack-Chain Reasoner — a mechanical
+pre-pass for root_agent.md's existing chaining step), Piece 11
+(Hypothesis Priority Queue — categorical triage rubric). Same
+discipline: no fake-precision scores, each extends an existing system.
+Implementing in order 10, 9, 11 per the user's request (touch the most
+heavily-used core tool first, want it stable before building on top).
+
+### Piece 10 — Attack-Chain Reasoner: implemented and committed
+
+**Research finding, the biggest one in this batch**: `root_agent.md`'s
+"Chain Findings Before Finishing" section **already existed**, and
+already covers most of what this piece originally described — enumerate
+plausible chains from confirmed findings, spawn a validation subagent
+per chain, report a validated chain at combined severity, and refuse to
+elevate an unvalidated one (`counterevidence.md`'s discipline applied at
+chain level), with named example chain patterns. The gap wasn't the
+methodology — that section is **100% LLM reasoning, zero tooling
+support**: step 1 says "enumerate plausible chains... from the actual
+confirmed findings" with nothing but the root agent's own cold re-read
+of every finding. Piece 10's real value is a mechanical pre-pass that
+narrows that search, the same relationship Piece 2 has to
+vulnerability-hunting.
+
+**Second finding, which changed the concrete design**: read
+`create_vulnerability_report`'s full ~20-parameter signature — every
+field is free-text prose (`title`, `description`, `evidence`,
+`technical_analysis`, ...) plus `endpoint`/`method`/`code_locations` for
+location. **No structured field anywhere captures "what this discloses"
+or "what this requires."** A textual/schema match per the original ask
+("finding A discloses `booking_id`; finding B requires `booking_id`")
+wasn't checkable without either fragile prose-regex (unreliable, not
+really mechanical) or two new optional fields captured at the one point
+they're cheaply known — same lesson as Piece 4's account-ownership gap.
+User approved adding the fields directly rather than a separate
+"tag after the fact" tool, for the same forgotten-step reason Piece 4
+already established.
+
+**Third finding**: findings live in `ReportState.vulnerability_reports`,
+a **host-process, in-memory** list — not a sandbox file the agent's
+shell can read mid-scan (`vulnerabilities.json` only gets written at
+scan end, via `save_run_data()`, itself called from
+`add_vulnerability_report` on every single filed finding — a more
+frequent call pattern than §24's Piece 8 audit found for the *other*
+`save_run_data()` call sites it grepped for, worth noting so a future
+read of that section doesn't over-generalize "only twice in the
+codebase" to every caller). Either way, this can't be a
+`custom/source_aware_sast.md`-style embedded shell script like
+`entry_points.md`/`attack_surface.md` — it needed a real tool.
+
+**Built**:
+- `strix/report/state.py`'s `add_vulnerability_report` — two new
+  optional parameters, `discloses: list[str] | None` and
+  `requires: list[str] | None`, stored as cleaned (stripped,
+  empty-filtered) lists only when non-empty — fully backward compatible,
+  every existing caller unaffected.
+- `strix/tools/reporting/tool.py`'s `create_vulnerability_report` — same
+  two optional parameters threaded through `_do_create`, with docstring
+  guidance: plain identifier/field names only, not descriptions; most
+  findings won't set either; used only for `list_chain_candidates`'
+  mechanical cross-referencing, never for judgment or severity.
+- **New tool** `list_chain_candidates` — host-side, reads
+  `ReportState.vulnerability_reports` directly (already in memory, zero
+  file I/O), computes every `discloses`/`requires` pairwise set-overlap
+  across all filed findings (`_normalize_identifier`: lowercase +
+  whitespace-collapse only — deliberately not underscore/space-equivalent,
+  confirmed by a dedicated test after an early draft of the test itself
+  assumed otherwise), returns candidate pairs
+  (`discloses_report_id`/`requires_report_id`/`shared_identifiers`).
+  Bidirectional overlaps (A discloses X that B requires, **and** B
+  discloses Y that A requires) correctly produce two distinct directional
+  candidates, not one collapsed row — a real chain runs a specific
+  direction. An empty result carries an explicit `note` that this does
+  not mean no chains exist, since most findings won't set these fields.
+- Wired as a new **step 0** in `root_agent.md`'s existing "Chain Findings
+  Before Finishing" — read before step 1's own enumeration, narrows but
+  never replaces it.
+
+**Verified**: `tests/test_chain_candidates.py` (6 tests) — the exact
+requested scenario (finding A discloses `booking_id`, finding B
+requires it, correctly surfaces as a candidate), a non-overlapping pair
+correctly produces no candidate (with the explicit `note`),
+case/whitespace-insensitive matching (and confirmed underscore/space
+are *not* treated as equivalent — a real bug in the test's own first
+draft, fixed in the test, not the code, once traced), untagged findings
+counted but never candidates, no-report-state graceful handling, and the
+bidirectional two-candidates case. Full existing reporting test suites
+(`test_list_reports.py`, `test_reporting_fields.py`, 102 tests)
+confirmed unaffected by the new optional parameters. Skill file loads
+cleanly. Full suite re-run clean: 1250 passed (up 6), 1 skipped, same
+pre-existing/unrelated `test_pricing.py` failure as every other piece in
+this track.
+
+**Committed** as its own commit.
+

@@ -259,6 +259,8 @@ class ReportState:
         fix_pr_body: str | None = None,
         finding_class: str | None = None,
         dependency_metadata: dict[str, str] | None = None,
+        discloses: list[str] | None = None,
+        requires: list[str] | None = None,
         agent_id: str | None = None,
         agent_name: str | None = None,
     ) -> str:
@@ -320,6 +322,12 @@ class ReportState:
         report["finding_class"] = (finding_class or "dynamic").strip().lower()
         if dependency_metadata:
             report["dependency_metadata"] = dependency_metadata
+        cleaned_discloses = [s.strip() for s in (discloses or []) if s and s.strip()]
+        if cleaned_discloses:
+            report["discloses"] = cleaned_discloses
+        cleaned_requires = [s.strip() for s in (requires or []) if s and s.strip()]
+        if cleaned_requires:
+            report["requires"] = cleaned_requires
         if agent_id:
             report["agent_id"] = agent_id
         if agent_name:

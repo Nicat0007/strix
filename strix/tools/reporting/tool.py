@@ -282,6 +282,8 @@ async def _do_create(
     confidence_rationale: str | None = None,
     fix_verification: str | None = None,
     fix_pr_body: str | None = None,
+    discloses: list[str] | None = None,
+    requires: list[str] | None = None,
     agent_id: str | None = None,
     agent_name: str | None = None,
 ) -> dict[str, Any]:
@@ -404,6 +406,8 @@ async def _do_create(
             code_locations=parsed_locations,
             fix_verification=fix_verification,
             fix_pr_body=fix_pr_body,
+            discloses=discloses,
+            requires=requires,
             agent_id=agent_id if isinstance(agent_id, str) else None,
             agent_name=agent_name if isinstance(agent_name, str) else None,
         )
@@ -468,6 +472,8 @@ async def create_vulnerability_report(
     confidence_rationale: str | None = None,
     fix_verification: str | None = None,
     fix_pr_body: str | None = None,
+    discloses: list[str] | None = None,
+    requires: list[str] | None = None,
 ) -> str:
     """File a vulnerability report — one report per fully-verified finding.
 
@@ -808,6 +814,21 @@ async def create_vulnerability_report(
             fix (summary + rationale). Prose/markdown only — the code
             change itself belongs in ``code_locations``. Omit for
             black-box findings.
+        discloses: Optional. Plain identifier/field names this finding's
+            *response* exposes to the attacker (e.g.
+            ``["booking_id", "session_token"]``) — not a description,
+            just the bare names. Used only for mechanical
+            cross-referencing against other findings' ``requires`` via
+            ``list_chain_candidates`` (see `coordination/root_agent.md`'s
+            "Chain Findings Before Finishing"), never for judgment or
+            severity. Omit when this finding doesn't disclose anything
+            reusable elsewhere — most findings won't set this.
+        requires: Optional. Plain identifier/parameter names this
+            finding's exploitation needs as *input* (e.g.
+            ``["booking_id"]``) — the mirror of ``discloses``. A finding
+            whose ``requires`` overlaps another finding's ``discloses``
+            is a candidate chain link, surfaced (never auto-confirmed)
+            by ``list_chain_candidates``.
 
     Example (abbreviated — mirror this structure)::
 
@@ -880,6 +901,8 @@ async def create_vulnerability_report(
         code_locations=code_locations,
         fix_verification=fix_verification,
         fix_pr_body=fix_pr_body,
+        discloses=discloses,
+        requires=requires,
         agent_id=agent_id,
         agent_name=agent_name,
     )
@@ -1689,6 +1712,104 @@ def _do_get_report(report_id: str, caller_agent_id: str | None = None) -> dict[s
         "error": f"Report with id '{report_id}' not found",
         "report": None,
     }
+
+
+def _normalize_identifier(value: str) -> str:
+    return " ".join(str(value).strip().lower().split())
+
+
+def _do_list_chain_candidates(*, caller_agent_id: str | None = None) -> dict[str, Any]:
+    """Deterministic set-overlap between every report's ``discloses`` and every
+    other's ``requires`` — the mechanical pre-pass for
+    ``coordination/root_agent.md``'s "Chain Findings Before Finishing".
+
+    Purely descriptive: a shared identifier name is a candidate link to
+    verify, never a confirmed chain. This never runs new investigation and
+    never scores anything — it reads what's already in memory
+    (``ReportState.vulnerability_reports``, every entry already a
+    fully-verified, filed finding by construction) and compares plain
+    strings.
+    """
+    del caller_agent_id  # every agent sees the same cross-referencing; unused here
+    from strix.report.state import get_global_report_state
+
+    report_state = get_global_report_state()
+    if report_state is None:
+        return {
+            "success": True,
+            "candidates": [],
+            "reports_considered": 0,
+            "reports_with_chain_fields": 0,
+            "warning": "Report state unavailable - no reports have been filed yet",
+        }
+
+    reports = report_state.get_existing_vulnerabilities()
+    tagged_count = sum(1 for r in reports if r.get("discloses") or r.get("requires"))
+
+    candidates: list[dict[str, Any]] = []
+    for discloser in reports:
+        discloses = {_normalize_identifier(v) for v in (discloser.get("discloses") or [])}
+        if not discloses:
+            continue
+        for consumer in reports:
+            if consumer is discloser:
+                continue
+            requires = {_normalize_identifier(v) for v in (consumer.get("requires") or [])}
+            shared = sorted(discloses & requires)
+            if not shared:
+                continue
+            candidates.append(
+                {
+                    "discloses_report_id": discloser.get("id"),
+                    "discloses_report_title": discloser.get("title"),
+                    "requires_report_id": consumer.get("id"),
+                    "requires_report_title": consumer.get("title"),
+                    "shared_identifiers": shared,
+                }
+            )
+    candidates.sort(key=lambda c: (str(c["discloses_report_id"]), str(c["requires_report_id"])))
+
+    result: dict[str, Any] = {
+        "success": True,
+        "candidates": candidates,
+        "reports_considered": len(reports),
+        "reports_with_chain_fields": tagged_count,
+    }
+    if not candidates:
+        result["note"] = (
+            "No mechanical overlap found - this does not mean no chains exist. "
+            "Most findings won't have discloses/requires set at all "
+            f"({tagged_count}/{len(reports)} do here); your own reading per "
+            "root_agent.md's 'Chain Findings Before Finishing' step 1 is still required."
+        )
+    return result
+
+
+@function_tool(timeout=30)
+async def list_chain_candidates(ctx: RunContextWrapper) -> str:
+    """Mechanically cross-reference filed findings' ``discloses``/``requires`` fields.
+
+    **Run this first, as step 0 of `coordination/root_agent.md`'s "Chain
+    Findings Before Finishing"** — a zero-LLM-cost deterministic set-overlap
+    over data already in memory, not new investigation. A result here is a
+    candidate to verify end-to-end (same PoC-or-it-didn't-happen bar as
+    every other finding), never a confirmed chain.
+
+    Not every filed finding sets ``discloses``/``requires`` — most won't,
+    since they only apply when a finding's response plainly exposes a
+    reusable identifier or its exploitation plainly needs one as input. An
+    empty or short result does **not** mean no chains exist; it means the
+    mechanical pass found nothing, and step 1's own reading of
+    ``list_reports`` is still required regardless of what this returns.
+
+    Read-only. Considers every report filed by any agent in this scan.
+    """
+    caller_agent_id, _ = _caller_identity(ctx)
+    return json.dumps(
+        await _run_report_reader(_do_list_chain_candidates, caller_agent_id=caller_agent_id),
+        ensure_ascii=False,
+        default=str,
+    )
 
 
 @function_tool(timeout=30)
