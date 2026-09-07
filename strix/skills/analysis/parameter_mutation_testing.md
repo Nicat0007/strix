@@ -235,6 +235,16 @@ Escalation gate (real cross-user content proof, not a status-code diff
 alone) and `counterevidence.md`'s full closure discipline, exactly like
 every other record this file produces.
 
+**Log `owner_scope_verdict`, never `signal_class`, in `mutation_candidates.md`
+for a completed actor-replay comparison.** The ledger's "last result" per
+candidate exists to let a later agent skip straight to what matters
+without re-reading the raw diff record — but the two fields disagree on
+which value means "interesting" for this one comparison type, so a row
+that logged `signal_class` here (reusing the same field mutation
+candidates use) would silently reintroduce the exact ambiguity this
+subsection exists to resolve, one layer up, in the ledger a future agent
+actually reads first.
+
 ## Class-Specific Generators Stay Put
 
 This file never invents a candidate value. Each vuln skill keeps owning its
@@ -318,7 +328,12 @@ already established for everything else under `/workspace/recon/`.
   (`not_run` | `representative_run` | `per_member_run` — see "Actor
   Replay (Differential Authorization)" below) — a worklist ledger, not a
   hit list, matching `entry_points.md`'s own "map to read from, not a
-  report" framing.
+  report" framing. **For an actor-replay candidate specifically, log its
+  last `owner_scope_verdict`, not `signal_class`** — the two fields read
+  the same underlying diff record in opposite directions for this one
+  comparison type (see "Actor Replay (Differential Authorization)"), so
+  the field logged here must match which kind of comparison the row is
+  reporting.
 - Any of `mass_assignment.md`/`broken_function_level_authorization.md`/
   `idor.md`'s testing agents read this file before generating their own
   family list, and update a family's row (not append a duplicate) when

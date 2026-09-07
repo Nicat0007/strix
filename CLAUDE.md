@@ -2035,6 +2035,29 @@ synthetic scenario, the same standard Piece 2 was held to:
 with Pieces 1/2's Python plumbing or Piece 2's bash/Python distillation
 script.
 
+**Follow-up gap caught in review, fixed the same night**: the committed
+version fully documented `owner_scope_verdict`'s polarity inversion in
+the "Actor Replay" subsection itself, but `mutation_candidates.md`'s own
+schema description (the "Where the Family Map Lives" bullet) still said
+only "their last `signal_class`" for a family's candidates, with no
+mention of what an actor-replay candidate should log instead. A future
+agent — or session — populating or reading that ledger without
+re-reading the whole Actor Replay subsection first could reuse
+`signal_class` there and reintroduce the exact ambiguity this piece
+exists to resolve, one layer up, in the artifact a later agent actually
+reads first. Fixed with two additions, not one — a sentence in the
+ledger-schema bullet itself ("for an actor-replay candidate
+specifically, log its last `owner_scope_verdict`, not `signal_class`")
+and a closing paragraph in the Actor Replay subsection stating the same
+rule from the other direction — deliberate redundancy, since this is
+exactly the kind of cross-cutting invariant worth restating wherever a
+reader might land rather than defining once and hoping it's found.
+Verified: skill file still loads cleanly (balanced fences, 22679 chars,
+up from 21733), `tests/test_skill_dir_extension.py` unchanged, full
+suite re-run clean (1232 passed, 1 skipped, same pre-existing
+`test_pricing.py` failure). Committed as a small follow-up on top of
+Piece 3's own commit.
+
 **All three pieces from the external architecture review are now
 implemented and committed.** None introduced an LLM-generated
 fake-precision score anywhere: Piece 1's `corroborations` is a plain
