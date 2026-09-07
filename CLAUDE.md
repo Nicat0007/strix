@@ -736,6 +736,36 @@ methodology) together on a real plugin, per user's plan.
 - Keep every change small and reversible. Note what changed and why, so
   changes can be cleanly reverted with `git` if a prompt/skill edit makes
   DeepSeek behave worse.
+- **Named pattern: the "obvious API is secretly stale/inverted" bug
+  shape.** The single highest-value thing this project's testing
+  discipline has repeatedly caught — three confirmed instances so far,
+  all in the cost-reduction track (§21-§24), each found by actually
+  tracing data flow or building a test rather than trusting how an API
+  *reads*:
+  1. Piece 2's `attack_surface.md` window — a forward-only
+     registration-to-next-marker window silently missed a guard that
+     was defined *before* the route registration (a common real
+     WordPress layout), because "the window looks right" was never
+     checked against a realistic fixture.
+  2. Piece 3's `signal_class` — reusing the existing diff engine
+     "unchanged" for actor-replay comparisons would have silently read
+     an identical response (the actual leak signal) as `"none"`, the
+     same value that means "boring" everywhere else the field is used —
+     an inverted-polarity trap invisible from the schema alone.
+  3. Piece 8's `ReportState.get_total_llm_usage()` — reads as "the
+     current usage," is actually a cache only refreshed twice in the
+     whole codebase near scan start/end, so it silently shows stale
+     near-zero numbers for a running agent's entire lifetime.
+  The fix in all three cases was the same: **build the actual test
+  scenario (or trace the actual call graph) before trusting what a
+  function's name or return-shape implies**, not just review the design
+  on paper. When implementing anything that reads from an existing
+  system (a cache, a window, a shared diff engine), spend the extra
+  step confirming the read is live/correctly-oriented/complete against
+  a concrete case, even when the code "looks right." This has been the
+  actual value of this project's per-piece testing requirement — not
+  confidence theater, a real bug catch nearly every time it's been
+  applied seriously.
 
 ## 13. ACCESS-CONTROL COVERAGE AUDIT + 2024-25 BOUNTY-TREND GAP LIST
    (audit + design only — plan approved by user, not yet implemented)
