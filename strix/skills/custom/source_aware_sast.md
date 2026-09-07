@@ -278,6 +278,220 @@ surface (e.g. `wordpress.md`'s `wp_ajax_*`/`register_rest_route` greps) to
 this same file rather than leaving them in a separate scratch note — one
 map, one place every later agent looks.
 
+## Attack Surface Compiler (Structural Facts, Not Judgment)
+
+`entry_points.md`'s "General Structural Sweep" tier is a flat, ruleless
+call-site dump — on a real plugin it runs into the tens of thousands of
+lines, useful to grep by name but not something a reviewing agent can
+query for "which routes lack an auth check" without reading the whole
+tree. This step, run once per repository immediately after the
+Entry-Point Map above, converts route/hook registrations, tainted
+sources, sinks, and auth-check presence into a compact, queryable
+per-route summary: `/workspace/.source-aware/attack_surface.md`. It is a
+**separate, sibling artifact**, not a fourth tier merged into
+`entry_points.md` — the two answer different questions (`entry_points.md`:
+"where did a scanner or a ruleless sweep find something"; this one: "what
+does this route's own surrounding code structurally contain").
+
+**This is descriptive extraction only. It makes no vulnerability
+judgment.** "Auth-check keywords found in range: none" is a statement
+about text proximity inside a heuristic window, never a claim that no
+guard exists — see `frameworks/wordpress.md`'s "Verify the Guard, Don't
+Assume It" for the exact discipline this artifact feeds into: a
+reviewing agent still opens the file before treating an absence as a
+finding.
+
+**The window heuristic, stated plainly.** A route/hook registration
+often names its handler by string (`add_action('hook', 'handle_x')`)
+rather than defining it inline, and the handler can be defined *above or
+below* the registration line — grouping all registrations together at
+the bottom of a file, with handler bodies scattered above in unrelated
+order, is a common real WordPress-plugin shape. So this compiler first
+tries to resolve the registration's callback name to an actual `function
+<name>(` definition anywhere in the same file, and windows around *that*
+definition (bounded by the next detected route/function-definition line
+in the file, or a fixed `+60` line fallback) instead of the registration
+line itself. When no callback name resolves (an inline handler, a
+non-string reference, a framework this pass doesn't specifically parse),
+it falls back to a forward-only window from the registration line, same
+bounding rule. Both cases are explicitly labeled as approximate in the
+output — this is deliberately calibrated toward recall (a guard just
+outside the window reads as "none found") over precision, since a
+missed-guard *lead* costs a quick file read to rule out, while a
+confident false "structurally clean" claim costs a real bug.
+
+```bash
+ART=/workspace/.source-aware
+
+# Small, extensible keyword sets. Framework skills that layer on top of
+# this pass (wordpress.md, a future android.md, etc.) can widen a set
+# with their own -e patterns the same way asset_discovery.md's
+# framework-specific greps already extend other shared artifacts here —
+# not a closed list.
+declare -A ATTACK_SURFACE_PATTERNS=(
+  [route]='add_action\(|add_filter\(|register_rest_route\(|add_shortcode\(|@app\.route|@router\.(get|post|put|delete|patch)|\bapp\.(get|post|put|delete|patch)\(|\brouter\.(get|post|put|delete|patch)\(|\br\.(GET|POST|PUT|DELETE|PATCH)\(|\bpath\(|re_path\(|http\.HandleFunc'
+  [function_def]='\bfunction\s+[A-Za-z_][A-Za-z0-9_]*\s*\('
+  [source]='\$_GET|\$_POST|\$_REQUEST|\$_COOKIE|\$_FILES|\$_SERVER|request\.args|request\.form|request\.json|request\.GET|request\.POST|req\.query|req\.body|req\.params'
+  [sink_db]='\$wpdb->|cursor\.execute\(|->execute\(|\.query\('
+  [sink_file]='fopen\(|file_put_contents\(|unlink\(|os\.remove\(|\bopen\('
+  [sink_deserialize]='\bunserialize\(|maybe_unserialize\(|pickle\.loads\(|yaml\.load\('
+  [sink_output]='\becho\b|print_r\(|\bprint\(|res\.send\(|response\.write\('
+  [auth_check]='current_user_can\(|check_ajax_referer\(|wp_verify_nonce\(|permission_classes|@login_required|requireAuth|is_authenticated'
+)
+for label in "${!ATTACK_SURFACE_PATTERNS[@]}"; do
+  rg -n -H --no-heading -e "${ATTACK_SURFACE_PATTERNS[$label]}" . \
+    > "$ART/attack-surface-$label.txt" 2>/dev/null || true
+done
+
+python3 - <<'PY'
+import re
+from collections import defaultdict
+from pathlib import Path
+
+art = Path("/workspace/.source-aware")
+
+CATEGORY_LABELS = {
+    "route": "route/hook",
+    "function_def": "function definition",
+    "source": "source",
+    "sink_db": "sink:db",
+    "sink_file": "sink:file",
+    "sink_deserialize": "sink:deserialize",
+    "sink_output": "sink:output",
+    "auth_check": "auth-check",
+}
+
+# WordPress add_action/add_filter callback shapes: a bare string name, or
+# array($this, 'name') for a method. Other frameworks fall back to the
+# forward-window heuristic below rather than a resolved definition.
+CALLBACK_NAME_RE = re.compile(
+    r"add_(?:action|filter)\(\s*['\"][^'\"]+['\"]\s*,\s*"
+    r"(?:array\(\s*\$this\s*,\s*)?['\"]([A-Za-z_][A-Za-z0-9_]*)['\"]"
+)
+FUNCTION_DEF_NAME_RE = re.compile(r"function\s+([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def load(label):
+    path = art / f"attack-surface-{label}.txt"
+    hits = []
+    if not path.exists():
+        return hits
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        parts = line.split(":", 2)
+        if len(parts) < 3:
+            continue
+        file_path, line_no, text = parts
+        try:
+            line_no = int(line_no)
+        except ValueError:
+            continue
+        hits.append((file_path, line_no, text.strip().replace("`", "'")))
+    return hits
+
+
+by_category = {label: load(label) for label in CATEGORY_LABELS}
+
+by_file = defaultdict(lambda: defaultdict(list))
+for label, hits in by_category.items():
+    for file_path, line_no, text in hits:
+        by_file[file_path][label].append((line_no, text))
+
+WINDOW_FALLBACK = 60
+lines_out = [
+    "# Attack Surface Summary",
+    "",
+    "Descriptive extraction only - no vulnerability judgment. \"Auth-check: "
+    "none found in range\" is a fact about text proximity within a heuristic "
+    "window, never a verdict that no guard exists. See "
+    "frameworks/wordpress.md's \"Verify the Guard, Don't Assume It\" - the "
+    "same discipline applies here: open the file before treating an "
+    "absence as a finding.",
+    "",
+]
+
+for file_path in sorted(by_file):
+    cats = by_file[file_path]
+    routes = sorted(cats.get("route", []))
+    func_defs = sorted(cats.get("function_def", []))
+    def_line_by_name: dict[str, int] = {}
+    for ln, text in func_defs:
+        m = FUNCTION_DEF_NAME_RE.search(text)
+        if m and m.group(1) not in def_line_by_name:
+            def_line_by_name[m.group(1)] = ln
+    all_marker_lines = sorted({ln for ln, _ in routes} | set(def_line_by_name.values()))
+
+    if not routes:
+        any_hits = any(cats.get(c) for c in CATEGORY_LABELS if c not in ("route", "function_def"))
+        if not any_hits:
+            continue
+        lines_out.append(f"### {file_path} (no detected route/hook - file-level summary)")
+        for label in (
+            "source", "sink_db", "sink_file", "sink_deserialize", "sink_output", "auth_check",
+        ):
+            hits = sorted(cats.get(label, []))
+            if hits:
+                locs = ", ".join(str(ln) for ln, _ in hits[:20])
+                lines_out.append(f"- {CATEGORY_LABELS[label]}: lines {locs}")
+        lines_out.append("")
+        continue
+
+    def window_end_after(start_line: int) -> int:
+        later = [m for m in all_marker_lines if m > start_line]
+        return (later[0] - 1) if later else start_line + WINDOW_FALLBACK
+
+    for route_line, route_text in routes:
+        m = CALLBACK_NAME_RE.search(route_text)
+        callback_name = m.group(1) if m else None
+        def_line = def_line_by_name.get(callback_name) if callback_name else None
+
+        if def_line is not None:
+            window_start, window_end = def_line, window_end_after(def_line)
+            lines_out.append(
+                f"### Route: {file_path}:{route_line} -> handler {callback_name}() "
+                f"at {file_path}:{window_start}-{window_end}"
+            )
+        else:
+            window_start, window_end = route_line, window_end_after(route_line)
+            lines_out.append(f"### Route: {file_path}:{route_line}-{window_end}")
+
+        lines_out.append(f"- Registration: `{route_text}`")
+        for label in ("source", "sink_db", "sink_file", "sink_deserialize", "sink_output"):
+            in_range = sorted(
+                (ln, text) for ln, text in cats.get(label, []) if window_start <= ln <= window_end
+            )
+            if in_range:
+                rendered = ", ".join(f"{ln}: {text[:80]}" for ln, text in in_range[:10])
+                lines_out.append(f"- {CATEGORY_LABELS[label]} in range: {rendered}")
+        auth_in_range = sorted(
+            (ln, text) for ln, text in cats.get("auth_check", []) if window_start <= ln <= window_end
+        )
+        if auth_in_range:
+            rendered = ", ".join(f"{ln}: {text[:80]}" for ln, text in auth_in_range[:5])
+            lines_out.append(f"- Auth-check keywords found in range: {rendered}")
+        else:
+            lines_out.append(
+                f"- Auth-check keywords found in range: none "
+                f"(window: {window_start}-{window_end}, approximate - verify before "
+                "treating as a gap)"
+            )
+        lines_out.append("")
+
+(art / "attack_surface.md").write_text("\n".join(lines_out) + "\n", encoding="utf-8")
+print(f"attack_surface.md: {len(by_file)} file(s) summarized")
+PY
+```
+
+Query it the same way `entry_points.md` is queried — grep for a file or
+category (`grep -A5 "Route: includes/ajax.php" attack_surface.md`,
+`grep "Auth-check keywords found in range: none"` to list every route
+with no nearby guard) rather than reading it top to bottom. A hit here is
+a **lead**, exactly like a `entry_points.md` structural-sweep hit: it
+tells you where to look, not what you'll find. The priv/`_nopriv`
+sibling-route pattern this compiler surfaces directly (one registration
+with a guard, a sibling registration for the same handler shape without
+one) is a real, common CVE shape in WordPress plugins — see
+`frameworks/wordpress.md`'s BFLA-adjacent guard-verification section.
+
 ## Semgrep First Pass
 
 Use Semgrep as the default static triage pass:

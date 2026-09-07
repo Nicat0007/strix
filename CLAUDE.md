@@ -1818,13 +1818,112 @@ generalize") with the LLM as a binary decision, never a score.
 **Committed** as `998ebf1` — code + skill + the 5 test-fixture fixes in
 one commit (13 files, 917 insertions).
 
-**Not yet started**: Piece 2 (Attack Surface Compiler — normalizing
-`entry_points.md`'s raw ast-grep structural sweep into a per-file/
-per-route summary of routes, sources, sinks, and auth-check presence, as
-a new sibling artifact `attack_surface.md` generated immediately after
-the existing 3-tier distillation in `source_aware_sast.md`) and Piece 3
-(Differential Authorization — extending `parameter_mutation_testing.md`'s
-Layer B with tiered multi-actor replay for black-box BOLA/BFLA, gated on
-2+ provisioned accounts from `account_provisioning.md`). Full designs for
-both already exist in this conversation; next step is starting Piece 2.
+**Piece 2 — Attack Surface Compiler: implemented and committed.** New
+`## Attack Surface Compiler (Structural Facts, Not Judgment)` section in
+`strix/skills/custom/source_aware_sast.md`, placed immediately after the
+Entry-Point Map section, producing a new sibling artifact
+`/workspace/.source-aware/attack_surface.md` — a compact per-route
+summary (routes/hooks, tainted sources, sinks by category, auth-check
+presence) rather than a fourth tier merged into `entry_points.md`, since
+the two answer different questions (entry_points.md: where a scanner
+found something; this one: what a route's own surrounding code
+structurally contains). Skill-only, no Python/Dockerfile touched.
+
+**Simplification found while implementing, before it shipped**: the
+original design (in this same conversation) proposed a new `sg run`
+per-language function-declaration pass for real AST block boundaries,
+worried a line-window heuristic would be too crude. Building it,
+`entry_points.md`'s own established idiom for this shape of sweep — plain
+`rg -n -e PATTERN .` directly over the tree, the same as this file's own
+pre-existing "Logic-bearing functions" section already does — turned out
+sufficient: empirically verified (see below) that a direct `rg` sweep for
+route/source/sink/auth-check keywords, bucketed by a same-file
+line-window in pure Python, produces the same result as a much heavier
+xargs-batched-file-list variant modeled on the ast-grep pipeline, with
+none of that variant's complexity. No new external tool, no per-language
+AST patterns.
+
+**Real design flaw caught by testing against a realistic fixture, fixed
+before shipping**: a first version windowed auth-check presence
+*forward only* from a route registration line
+(`[route_line, next_route_line - 1]`). Tested against a synthetic but
+realistic WordPress shape — `add_action('hook', 'handle_save')` naming a
+handler function *defined earlier in the file* (a very common real
+plugin layout: all registrations grouped at the bottom, handler bodies
+scattered above) — and the forward-only window never saw the guard at
+all, since it lived at a lower line number than the registration. Fixed
+by resolving the registration's callback name (the WordPress
+`add_action`/`add_filter` string-callback and `array($this, 'method')`
+shapes specifically) to an actual `function <name>(` definition anywhere
+in the same file via one more keyword sweep (`function_def`), and
+windowing around *that* definition instead — bounded by the next
+detected route-or-function-definition line in the file, or a `+60`
+fallback, same rule as before. When no callback name resolves (an inline
+handler, a non-WordPress framework), it falls back to the original
+forward-only window from the registration line — inline-handler
+frameworks (Express/Flask/FastAPI-style, body written at the registration
+site) are exactly the case that heuristic already covers correctly. Both
+paths are labeled `approximate` in the rendered output; this is
+deliberately recall-leaning (a guard just outside the window reads as
+"none found") over precision, matching the artifact's own stated
+"lead, not a verdict" framing.
+
+**Verified, not assumed:**
+- Extracted the exact Python heredoc and bash `declare -A` block from the
+  committed skill file (not a hand-typed re-creation) and ran both
+  against synthetic fixtures on the host: `bash -n` for the extracted
+  shell block, `python3 -m py_compile` plus an actual run for the
+  extracted Python, path-substituted only (the hardcoded
+  `/workspace/.source-aware` swapped for a scratch dir; no logic
+  changed) since this host has no `/workspace`.
+- A realistic 2-route WordPress-shaped fixture (a guarded
+  `wp_ajax_save_settings` handler defined before its registration, an
+  unguarded `wp_ajax_nopriv_*` sibling reaching the same tainted
+  `$_POST`/`$wpdb->query` path) correctly resolved the guarded handler's
+  window to its true definition line and found the `current_user_can()`
+  check there, while the nopriv sibling correctly reported "none found"
+  — exactly the priv/nopriv guard-gap shape this compiler exists to
+  surface as a lead, cited directly in the skill text's own closing
+  paragraph.
+- A regression check against the original (non-realistic) synthetic
+  fixture set — multiple routes in one file with no resolvable callback
+  name, and a file with hits but no detected route at all (the
+  file-level-summary fallback path) — confirmed unchanged, correct
+  output after the callback-resolution fix was added.
+- One caught test-fixture bug of my own during this: an early fixture
+  accidentally placed a fake "route" line for `other/no-route.php` in
+  the *route* raw file, so the "no detected route" fallback path never
+  actually ran until the fixture was corrected — a bug in the test data,
+  not the script; re-verified after fixing it.
+- Confirmed `rg` on the actual host is a Claude-Code-tooling shell
+  function (re-execs the Claude binary under `ARGV0=rg`), not real
+  ripgrep — there is no ripgrep binary on this dev host at all, so the
+  bash extraction commands themselves could not be run verbatim here.
+  Validated the one genuinely novel mechanical question (does `xargs
+  -d '\n' -n N <tool> -- < filelist` correctly preserve a
+  space-containing filename as one argument and batch correctly) against
+  real `grep` with identical `-n -H` flag semantics instead, then
+  simplified away from that xargs/file-list form entirely once testing
+  showed the simpler direct `rg -n -e PATTERN .` form (no file list, no
+  batching) produces identical output — real ripgrep's own flag surface
+  (`-n`, `-H`, `--no-heading`, `-e`) was not independently re-verified on
+  this host, since the file already relies on those exact flags
+  elsewhere (`custom/source_aware_sast.md`'s own pre-existing
+  "Logic-bearing functions" section) and this is standard, stable
+  ripgrep behavior.
+- `tests/test_skill_dir_extension.py` (20 tests) unchanged; skill file
+  still loads cleanly via `_qualified_skill_file_for_name` with a
+  balanced code-fence count. Full suite re-run clean: 1232 passed, 1
+  skipped, only the same pre-existing/unrelated `test_pricing.py` litellm
+  alias failure.
+
+**Committed** as its own commit, separate from Piece 1 and from Piece
+1's CLAUDE.md write-up commit (`33164fc`) — skill-only change, no
+Python/tests touched, so no shared blast radius with Piece 1's plumbing.
+
+**Not yet started**: Piece 3 (Differential Authorization — extending
+`parameter_mutation_testing.md`'s Layer B with tiered multi-actor replay
+for black-box BOLA/BFLA, gated on 2+ provisioned accounts from
+`account_provisioning.md`). Full design already exists in this
+conversation; next step is starting it.
 
