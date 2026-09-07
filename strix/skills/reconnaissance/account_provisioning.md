@@ -67,6 +67,7 @@ Cross-account claims need two real principals, not one session replayed:
 - A role-differentiated pair when self-service role selection exists (vendor/buyer, org-creator/invited-member) — gives vertical/BFLA proof without ever touching a real privileged account
 - Two separate tenants/orgs, not just two users in one org, when cross-tenant isolation is in scope — that's a different boundary than cross-user-same-tenant
 - Scale past two only if a specific finding needs a third role or tenant; two is the floor, not a hard cap
+- **Record the object you just created, immediately** — its type and ID, against the account that created it, in `auth_accounts.jsonl` (see "Saving Tokens for Reuse" below). This is the one piece of state `reconnaissance/trust_boundary_mapping.md` cannot recover later if it's skipped: nothing else in this scan writes down which account owns which object.
 
 ## Operator-Credential Fallback
 
@@ -79,6 +80,14 @@ Reach for this only when human-in-the-loop verification isn't available or didn'
 ## Saving Tokens for Reuse
 
 Write every obtained credential/token to `/workspace/recon/auth_tokens.txt` (or a structured `auth_accounts.jsonl` — principal, role, tenant, token/cookie, how it was obtained), the same shared-artifact convention the rest of recon uses (see `asset_discovery.md`, `coordination/root_agent.md`). Every subagent doing authenticated testing reads this file first instead of re-registering — including `analysis/parameter_mutation_testing.md`'s "Actor Replay (Differential Authorization)" section, which is inert below 2 recorded actors here and is the highest-signal black-box BOLA/BFLA technique available once this file has provisioned them.
+
+**Use the structured `auth_accounts.jsonl` form, not the flat `auth_tokens.txt` one, whenever `reconnaissance/trust_boundary_mapping.md` will run** (which is whenever 2+ accounts get provisioned at all) — it is the only form that carries the fields that skill needs, and it cannot recover them from a plain token dump after the fact. One JSON object per line:
+
+```json
+{"principal": "testuser_a@example.com", "role": "org-creator", "tenant": "org-1", "token": "Bearer eyJ...", "obtained_via": "self-registration", "owned_objects": [{"type": "project", "id": "5001"}]}
+```
+
+`owned_objects` is a list because an account can accumulate more than one object over a scan — append to it rather than overwriting the row each time a new object is created under this account.
 
 ## Discipline
 

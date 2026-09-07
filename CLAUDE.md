@@ -2067,3 +2067,145 @@ is a categorical read of a deterministic diff, never a confidence
 number — the stated constraint from the start of this track held
 through all three.
 
+## 22. TRUST BOUNDARY MAPPER (PIECE 4) — IMPLEMENTED AND COMMITTED
+
+Continuation of §21's external-architecture-review track. Two more
+pieces from the same review: Piece 4 (Trust Boundary Mapper) and Piece 5
+(Progressive Context). Piece 4 done first, per plan.
+
+**Research finding that changed the plan, caught before any code was
+written** — same "verify, don't assume" discipline that caught Piece 2's
+window-direction bug and Piece 3's `signal_class` polarity bug: read
+`account_provisioning.md` closely and confirmed it does **not** actually
+capture what a trust-boundary mapper needs to formalize.
+- The only artifact it *always* instructs writing is `auth_tokens.txt` —
+  a flat, unstructured token dump, zero fields. The structured
+  `auth_accounts.jsonl` form was offered only as a parenthetical
+  alternative, and even that form's documented fields (`principal, role,
+  tenant, token/cookie, how it was obtained`) carry `role` as free text
+  with no hierarchy — nothing in the codebase said whether "vendor"
+  outranks "buyer."
+- **Object ownership was never recorded anywhere.** "Provisioning Two
+  Accounts" already instructed creating "its own object created under
+  it" per account, but never said to write down *which* object (type +
+  ID) — so there was no ownership graph to formalize; it had to be
+  captured at the source first.
+- A second, related gap surfaced while designing the concrete
+  distillation script (not from the initial account_provisioning.md
+  read, but from checking what Piece 4 would actually read hierarchy
+  evidence from): `broken_function_level_authorization.md` describes
+  building an "Actor × Action matrix" as a methodology step but never
+  persists it anywhere — no artifact existed for a role-hierarchy
+  derivation to read. Flagged and fixed as part of this piece rather
+  than silently worked around, since without it the "falls back to
+  unordered set when no BFLA matrix has run yet" behavior would have
+  been vacuously true (there was never a matrix to fall back from).
+
+**Fixed at the source, both additive, before building the mapper
+itself:**
+- `account_provisioning.md`'s "Provisioning Two Accounts" — new bullet:
+  record the just-created object's `(type, id)` against its owning
+  account immediately, in `auth_accounts.jsonl`, "the one piece of state
+  trust_boundary_mapping.md cannot recover later if it's skipped." Its
+  "Saving Tokens for Reuse" section promotes the structured
+  `auth_accounts.jsonl` form from a parenthetical option to the
+  recommended default whenever 2+ accounts get provisioned, with a
+  concrete schema example including the new `owned_objects: [{"type":
+  ..., "id": ...}]` field.
+- `broken_function_level_authorization.md`'s Testing Methodology step 1
+  — one added sentence: append each actor×action cell's result to
+  `/workspace/recon/actor_action_matrix.jsonl`
+  (`{"principal", "role", "action", "result": "allowed"|"denied"}`) as
+  the matrix is built, naming `trust_boundary_mapping.md` as the sole
+  consumer.
+
+**New file** `strix/skills/reconnaissance/trust_boundary_mapping.md` —
+builds `/workspace/recon/trust_boundaries.md` from `auth_accounts.jsonl`
+(required) and `actor_action_matrix.jsonl` (optional). Purely descriptive
+extraction, same discipline as §21's Attack Surface Compiler: no
+hypotheses, no scores, no predicted leaks. Four sections:
+- **Actors** — principal/role/tenant/owned_objects, one row per
+  provisioned account, role reported verbatim, never reworded or ranked.
+- **Role Relationships** — derived **only** from observed
+  `actor_action_matrix.jsonl` results, never from role names. Four
+  honest outcomes rather than a forced binary: a confirmed superset edge
+  (real evidence, cited to how many actions were compared), peers (tied
+  on everything tested), **divergent** (each role beat the other on at
+  least one tested action — genuinely incomparable, not a data gap and
+  not silently merged into "peers"), and insufficient data (nothing
+  tested against both roles yet). With no matrix at all, every role is
+  an explicit unordered set — exactly the "don't force a linear order
+  onto a system that doesn't have one" instruction from the design pass.
+- **Object Type → Owner Map** — per object type (normalized
+  singular/plural-insensitively, e.g. `projects`/`project` collapse to
+  one type), which actors own an instance, which share a role
+  (horizontal/BOLA candidate pool), which differ by role (vertical/BFLA
+  candidate pool).
+- **Test Pairs** — the actual worklist: horizontal pairs from same-role
+  co-ownership; vertical pairs **only** where a real superset edge
+  justifies one, always phrased as the lower-privileged actor replaying
+  the higher one's object — the interesting direction, since the
+  reverse (a senior role reaching a junior's object) is often by design.
+
+**Feeds Piece 3 without changing its cost bound**: `parameter_mutation_testing.md`'s
+Actor Replay subsection gained a paragraph — when `trust_boundaries.md`
+exists, its Test Pairs choose *which* pair fills the already-mandated
+one-representative-per-family slot (same-role pair for `item`/`collection`
+kind families, vertical pair for `action` kind families) instead of an
+arbitrary two accounts. Still exactly one representative per family;
+this only improves which pair fills that slot. Explicitly a no-op
+("this paragraph is a no-op") when `trust_boundaries.md` doesn't exist —
+Piece 3's original arbitrary-pair fallback is unchanged.
+
+**Wiring**: `coordination/root_agent.md`'s "Provision Accounts Before
+Hunting" phase gained one paragraph running `trust_boundary_mapping.md`
+immediately after provisioning, still before the hunting waves; one-line
+cross-references added to `idor.md` (Test Pairs name the horizontal
+pairs) and `broken_function_level_authorization.md` (Test Pairs name
+the vertical pairs); a Cross-References entry in
+`parameter_mutation_testing.md`.
+
+**Verified, not assumed** — same standard as Pieces 2/3, since this is
+another skill-file distillation script with no existing Python
+implementation to reuse: wrote the exact algorithm as a standalone
+script first, tested against four synthetic scenarios before embedding
+it in the skill file, then **re-extracted the actual embedded heredoc
+from the committed skill file** (not the standalone copy) and re-ran it
+against all four to confirm byte-identical output — same discipline as
+Piece 2's extraction-and-rerun check:
+1. **The user's requested scenario**: 3 accounts, two same-role peers
+   each owning a `project`/`projects` object (confirming the
+   singular/plural normalizer), one lower-privileged role with no
+   object. With no `actor_action_matrix.jsonl` present: correctly
+   produces the unordered-set fallback and exactly one horizontal (BOLA)
+   pair, zero vertical pairs (no hierarchy evidence to justify one).
+2. **Same accounts, matrix added** showing the lower role denied on 2
+   actions the higher role was allowed, tied on 1: correctly produces a
+   superset edge and two vertical (BFLA) pairs (one per owned object),
+   in addition to the unchanged horizontal pair.
+3. **A 3-role, 2-comparison-shape scenario** built specifically to
+   exercise the two subtler buckets: two roles tied on every tested
+   action correctly read as peers; two roles each denied on the other's
+   allowed action correctly read as divergent (not forced into either
+   peers or a hierarchy); a third role pair with no actions tested
+   against both correctly read as insufficient data.
+4. **No `auth_accounts.jsonl` at all**: correctly reports nothing to
+   build rather than guessing.
+5. A real Python bug caught and fixed *before* the standalone script was
+   even first run (not after): `edges` was referenced outside the scope
+   where it was defined, and a garbled `if "edges" in dir() else []`
+   placeholder from initial drafting — both fixed before the first test
+   run, not discovered by testing this time, but worth noting the
+   category is the same as Piece 2's caught bugs: a scripting mistake,
+   not a design mistake.
+6. All 6 edited/new skill files confirmed to load cleanly with balanced
+   code-fence counts, new skill name `trust_boundary_mapping` resolves
+   with no collisions against the other 4 `reconnaissance/*` skills.
+   `tests/test_skill_dir_extension.py` (20 tests) unchanged. Full suite
+   re-run clean: 1232 passed, 1 skipped, same pre-existing/unrelated
+   `test_pricing.py` litellm-alias failure as every prior piece in this
+   track.
+
+**Committed** as its own commit — skill-only, no Python/Dockerfile
+changes.
+

@@ -23,7 +23,10 @@ before/after comparison per endpoint. When 2+ accounts are provisioned
 (Differential Authorization)" section replays a request across roles
 directly — a lower-privileged actor's identical response to a
 higher-privileged actor's request is `owner_scope_verdict:
-"leak_suspected"`, a direct BFLA lead.
+"leak_suspected"`, a direct BFLA lead. `reconnaissance/trust_boundary_mapping.md`'s
+Test Pairs, when a real hierarchy edge exists in `actor_action_matrix.jsonl`,
+name the specific lower/higher pairs worth replaying instead of picking
+two accounts arbitrarily.
 
 ## Attack Surface
 
@@ -186,7 +189,7 @@ Real BFLA bugs live in these stack-specific mistakes more often than in generic 
 
 ## Testing Methodology
 
-1. **Build Actor × Action matrix** - Unauth, basic, premium, staff/admin; enumerate actions per role
+1. **Build Actor × Action matrix** - Unauth, basic, premium, staff/admin; enumerate actions per role. Append each cell's result to `/workspace/recon/actor_action_matrix.jsonl` as you go (`{"principal": ..., "role": ..., "action": "<METHOD> <route>", "result": "allowed"|"denied"}`) — this is the only artifact this matrix produces, and `reconnaissance/trust_boundary_mapping.md` is the sole consumer, deriving role hierarchy from it rather than from role names.
 2. **Obtain tokens/sessions** - For each role
 3. **Exercise every action** - Across all transports and encodings (JSON, form, multipart), including method overrides
 4. **Vary headers and selectors** - Org/tenant/project; test behind gateway vs direct-to-service

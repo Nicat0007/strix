@@ -64,6 +64,14 @@ authenticated surface: hunters still cover what's reachable unauthenticated,
 and the blocked authenticated surface goes into the final report as a named
 `needs_follow_up`, not an unmentioned gap.
 
+With two or more accounts in hand, run `reconnaissance/trust_boundary_mapping.md`
+next, still before the hunting waves — it turns the accounts you just
+provisioned into `trust_boundaries.md`'s object-ownership map and Test
+Pairs list, so IDOR/BFLA hunters start with which actor pairs to try
+instead of deciding by hand per candidate. It costs nothing beyond what
+provisioning already produced and re-runs cheaply if `broken_function_level_authorization.md`'s
+actor×action matrix fills in later.
+
 ## Reuse Recon and Triage Artifacts
 
 Recon agents write their inventory to `/workspace/recon/` (subdomains,

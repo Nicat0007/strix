@@ -33,7 +33,9 @@ nested/second-order case below) before sweeping them individually. When
 2+ accounts are provisioned (`account_provisioning.md`), that same file's
 "Actor Replay (Differential Authorization)" section is the highest-signal
 black-box BOLA technique available — read `owner_scope_verdict`, not
-`signal_class`, when using it.
+`signal_class`, when using it. `reconnaissance/trust_boundary_mapping.md`'s
+Test Pairs, when built, name the specific same-role pairs worth trying
+first instead of picking two accounts arbitrarily.
 
 **Reference Locations**
 - Paths, query params, JSON bodies, form-data, headers, cookies

@@ -187,6 +187,22 @@ per-family decision, not a per-member one):
 3. **Every other member**: actor replay only if its own single-actor
    sweep flagged it (same rule as tier 1).
 
+**Choosing which actors fill the tier-2 representative slot.** When
+`reconnaissance/trust_boundary_mapping.md` has produced
+`/workspace/recon/trust_boundaries.md`, read its Test Pairs list instead
+of picking two accounts arbitrarily: use a same-role pair from there for
+an `item`/`collection` kind family (horizontal/BOLA is the default
+concern for plain CRUD), and a vertical pair (lower-privileged actor
+replaying the higher one's object) for an `action` kind family
+(state-transition endpoints skew toward vertical). This does not add a
+tier or change the always-run cost — still exactly one representative
+per family — it only improves which pair fills that one slot from
+"whichever two accounts exist" to "the pair `trust_boundaries.md`
+identified as structurally relevant to this family's object type."
+**Without `trust_boundaries.md`, this paragraph is a no-op**: fall back
+to any 2 available actors, the behavior already documented above and
+unchanged from before this file existed.
+
 **Mechanics.** For a family's Control request (captured once, per the
 existing reuse rule), replay it — byte-identical: same path, method,
 params, object ID — as each additional actor's session. Diff every actor
@@ -390,6 +406,10 @@ request/diff loop from scratch and burning tokens re-establishing what
   authenticated actors "Actor Replay (Differential Authorization)"
   requires; this file consumes the tokens it saves to
   `/workspace/recon/auth_tokens.txt` / `auth_accounts.jsonl`.
+- `reconnaissance/trust_boundary_mapping.md` — optional, refines *which*
+  pair fills Actor Replay's tier-2 representative slot via
+  `trust_boundaries.md`'s Test Pairs; absent, the arbitrary-pair fallback
+  documented above is unchanged.
 
 ## Summary
 
