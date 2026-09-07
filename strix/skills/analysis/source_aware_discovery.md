@@ -76,7 +76,17 @@ the same discipline applied to how much you read to get there.
    bodies aren't visible in what you've read so far.
 4. **The whole file.**
 5. **Cross-file** — a base class, a shared helper module, middleware or
-   a decorator registered elsewhere.
+   a decorator registered elsewhere. **Before reading it, hash it
+   (`sha256sum <file>`) and call `query_file_summary(file_path,
+   content_hash)`** — a shared base class is exactly the file more than
+   one agent's escalation independently lands on, and a hit means
+   someone already did this reading for you. On a miss, read it
+   normally, then call `record_file_summary(file_path, content_hash,
+   summary)` before moving on so the next agent that escalates here
+   gets the hit you didn't. This is a per-scan cache, separate from
+   `entry_points.md`/`attack_surface.md` (already free, mechanically
+   built — nothing to check there) — it exists specifically for
+   non-route files those artifacts don't cover.
 
 **Concrete triggers**, so escalation is a decision, not a habit:
 
