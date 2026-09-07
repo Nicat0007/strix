@@ -18,6 +18,7 @@ from pydantic import ValidationError
 
 from strix.agents.prompt import render_system_prompt
 from strix.config import load_settings
+from strix.tools.agent_metrics.tools import record_tool_call
 from strix.tools.agents_graph.tools import (
     agent_finish,
     create_agent,
@@ -150,6 +151,7 @@ def _with_bounded_result(tool: FunctionTool) -> FunctionTool:
     invoke_tool = tool.on_invoke_tool
 
     async def invoke(ctx: Any, raw_input: str) -> Any:
+        _record_tool_call_metric(ctx)
         return await _bound_result(await invoke_tool(ctx, raw_input))
 
     tool.on_invoke_tool = invoke
@@ -282,10 +284,26 @@ def _with_strictness(tool: FunctionTool, strict_schemas: bool) -> FunctionTool:
     return dataclasses.replace(tool, strict_json_schema=False)
 
 
+def _record_tool_call_metric(ctx: Any) -> None:
+    """Best-effort ROI counter bump — see ``strix/tools/agent_metrics/tools.py``.
+
+    Every tool call in the system passes through here, so this must never
+    raise into the real invocation; ``record_tool_call`` already guards its
+    own body, this is a second layer against a lookup failure on ``ctx``
+    itself (an unexpected context shape from a future SDK change, say).
+    """
+    try:
+        inner = ctx.context if isinstance(getattr(ctx, "context", None), dict) else {}
+        record_tool_call(inner.get("agent_id"))
+    except Exception:
+        logger.debug("tool-call metric recording failed (non-fatal)", exc_info=True)
+
+
 def _function_tool_with_error_result(tool: FunctionTool) -> FunctionTool:
     invoke_tool = tool.on_invoke_tool
 
     async def invoke(ctx: Any, raw_input: str) -> Any:
+        _record_tool_call_metric(ctx)
         try:
             return await _bound_result(await invoke_tool(ctx, raw_input))
         except Exception as exc:  # noqa: BLE001 - tool errors should be model-visible results.
@@ -298,6 +316,7 @@ def _function_tool_with_error_result(tool: FunctionTool) -> FunctionTool:
 
 def _custom_tool_as_function_tool(tool: CustomTool) -> FunctionTool:
     async def invoke(ctx: Any, raw_input: str) -> Any:
+        _record_tool_call_metric(ctx)
         custom_input = _extract_custom_input(tool, raw_input)
         if not custom_input:
             return f"`{_custom_tool_input_field(tool)}` must be a non-empty string."
@@ -339,6 +358,7 @@ def _bound_custom_tool(tool: CustomTool) -> CustomTool:
     invoke_tool = tool.on_invoke_tool
 
     async def invoke(ctx: Any, raw_input: str) -> Any:
+        _record_tool_call_metric(ctx)
         return await _bound_result(await invoke_tool(ctx, raw_input))
 
     tool.on_invoke_tool = invoke

@@ -362,6 +362,18 @@ class ReportState:
     def get_total_llm_usage(self) -> dict[str, Any]:
         return dict(self.run_record.get("llm_usage") or self._build_llm_usage_record())
 
+    def get_live_llm_usage(self) -> dict[str, Any]:
+        """Current per-agent usage, computed now — not ``run_record``'s cached snapshot.
+
+        ``get_total_llm_usage`` reads ``run_record["llm_usage"]``, which is
+        only refreshed by ``_sync_llm_usage_record`` (called from
+        ``save_run_data``, itself called only near scan start/end) — stale
+        for essentially the whole duration of a running scan. Callers that
+        need a number for a still-running agent (``view_agent_graph``'s
+        per-agent ROI columns) need this instead.
+        """
+        return self._build_llm_usage_record()
+
     def get_process_llm_usage(self) -> dict[str, int | float]:
         """Return LLM usage accumulated since this process started."""
         usage = self._llm_usage.to_record()

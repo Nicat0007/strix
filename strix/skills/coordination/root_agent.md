@@ -171,6 +171,24 @@ well-scoped agents beats a dozen thin ones. When scope grows, extend an
 existing agent's mandate or queue the next wave after the current one
 reports, rather than fanning out further.
 
+**Reading Agent ROI**
+
+`view_agent_graph` shows real numbers per running/waiting agent — tokens
+spent (with cost share), cumulative tool calls, and coverage entries
+recorded (total, and in the last 10 minutes) — alongside the status
+you're already reading. None of these are a score or a verdict, and
+nothing here auto-stops an agent; they exist so a wind-down decision you
+were already going to make under budget pressure is informed by real
+counts instead of only the overall scan-budget percentage. A rough read:
+tool-call volume with no new coverage entries for a while suggests an
+agent circling the same ground rather than making progress on new
+surface — worth checking in on (`send_message_to_agent`) or reassigning,
+not a rule to automate. A high token count with active coverage growth
+is a productive agent doing real work, not a reason to stop it early.
+When you do decide to wind one down, prefer asking it to wrap up and
+report over `stop_agent` — it can still hand off partial findings and
+open `needs_follow_up` items on the way out.
+
 **Hierarchical Delegation**
 
 Complex findings warrant specialized subagents:

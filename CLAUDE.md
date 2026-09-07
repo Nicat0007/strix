@@ -2274,7 +2274,8 @@ now implemented, tested, documented, and committed.** None introduced
 an LLM-generated fake-precision score anywhere across any of them.
 
 ## 24. CONTEXT CACHE (PIECE 6) + FRAMEWORK-TRIGGER CONSOLIDATION
-    (PIECE 7, DOWNGRADED FROM ORIGINAL SCOPE) — IMPLEMENTED AND COMMITTED
+    (PIECE 7, DOWNGRADED) + TOKEN ROI TRACKING (PIECE 8) — ALL IMPLEMENTED
+    AND COMMITTED — COST-REDUCTION TRACK COMPLETE
 
 Continuation of the cost-reduction track (§21-§23), three more proposed
 pieces from the same review: Piece 6 (Context Cache), Piece 7 (Adaptive
@@ -2393,6 +2394,135 @@ from ~29.2k), `tests/test_skill_dir_extension.py` unchanged.
 (`source_aware_sast.md` only) as its own commit, since they touch
 disjoint files and are independently revertable.
 
-**Not yet done**: Piece 8 (Token ROI Tracking) — full design already
-approved, implementation next.
+**Piece 8 — Token ROI Tracking: implemented and committed.** Gives the
+root agent real, non-fabricated per-agent numbers for wind-down
+judgment, surfaced in `view_agent_graph()` — the existing "who's
+running/waiting" tool — rather than a new one.
+
+**Grounding, checked before writing code**: `strix/report/usage.py`'s
+`LLMUsageLedger` already tracks per-agent tokens/cost
+(`_agent_usage[agent_id]`); `coverage/tools.py`'s entries already carry
+`agent_id`. Neither needed new tracking. The one thing genuinely
+missing anywhere: a cumulative per-agent tool-call count —
+`TurnToolCallLimiter` (`strix/config/tool_call_limits.py`) only caps
+calls within a single turn and resets, no running total exists. Also
+considered and rejected: deriving tool-call counts by querying each
+agent's persisted SQLite session history (`agents.db`) instead of a live
+counter — correct in principle, but would mean a full session read on
+every `view_agent_graph` call, and the SDK's session interface doesn't
+expose a cheap count-only query; a lightweight in-memory counter at a
+single shared choke point is far cheaper and was already the original
+design.
+
+**New module** `strix/tools/agent_metrics/tools.py` — `record_tool_call(agent_id)`
+/ `get_tool_call_count(agent_id)`, in-memory only, deliberately **not
+persisted** (unlike `coverage`/`notes`): these numbers inform the
+*current* process's root-agent judgment, not a resumed scan, and adding
+a disk-write path for metrics-only counters wasn't justified.
+`record_tool_call` never raises — this runs on every single tool call in
+the system, so a bug in it must never break a real tool invocation.
+
+**The hook point, found by tracing rather than guessed**: every tool
+call in `strix/agents/factory.py` passes through one of four wrapping
+functions depending on (tool type × chat-completions vs. Responses API):
+`_function_tool_with_error_result`, `_custom_tool_as_function_tool`,
+`_bound_custom_tool`, `_with_bounded_result`. Initially added the counter
+to only the first — **caught before finalizing that this would have
+undercounted dramatically**, since `CustomTool`s (`exec_command`,
+`write_stdin`, `patch` — the most frequently called tools in any real
+scan) go through the other three paths entirely. Fixed by adding
+`_record_tool_call_metric(ctx)` to all four.
+
+**Verified the hook doesn't double-count in production** — traced
+whether any of the four wrapping functions could be applied more than
+once to the same shared tool object (which would nest the counter call
+and inflate counts): `_BASE_TOOLS`'s function-tool singletons (e.g.
+`view_agent_graph`) only ever pass through `_with_bounded_result`, which
+already carries a pre-existing `_strix_bounded` idempotency guard (added
+by the original maintainers, not by this change) — confirms tools get
+wrapped exactly once regardless of how many agents get built in one
+process. The other three wrapping functions apply only to each agent's
+own freshly-constructed sandbox `Filesystem`/`Shell` capability tools
+(`Filesystem(configure_tools=...)`/`Shell(...)` construct fresh
+`CustomTool` instances per `SandboxAgent(...)` call), never a shared
+singleton — so no double-wrap risk there either.
+
+**`view_agent_graph()` extended**, not replaced: `strix/tools/agents_graph/tools.py`
+gained `_agent_roi_suffix(agent_id)`, rendering three real numbers for
+`running`/`waiting` agents only (a finished agent's numbers are frozen
+and less relevant to a wind-down decision): tokens + cost share (from
+`LLMUsageLedger`), cumulative `tool_calls` (the new counter), and
+coverage entries recorded (total, plus a trailing-window count).
+
+**A second real bug caught by tracing the data flow before shipping,
+not by testing after the fact**: the natural read, `ReportState.get_total_llm_usage()`,
+turned out to return a **cached snapshot** (`run_record["llm_usage"]`)
+that's only refreshed by `_sync_llm_usage_record()`, itself called only
+from `save_run_data()` — which greping confirmed is called just twice in
+the whole codebase, both near scan start/end, never on a periodic tick.
+Using it would have shown stale, near-zero numbers for a still-running
+agent's entire lifetime — exactly defeating this piece's purpose. Fixed
+with a small, clean addition: `ReportState.get_live_llm_usage()`, a
+one-line public method delegating straight to
+`self._llm_usage.to_record()`, avoiding both the stale cache and a
+private-attribute reach-around from `agents_graph/tools.py`.
+
+**Windowing decision** (left to implementation-time judgment per the
+plan): wall-clock (last 10 minutes), not tool-call-count-based, because
+coverage entries already carry a timestamp and nothing tracks
+"tool-call count at time of recording" — computing the alternative would
+mean touching `coverage/tools.py`'s schema for a metrics-only piece.
+Documented inline in the code as an explicit choice, not a default no
+one decided.
+
+New `**Reading Agent ROI**` subsection in `coordination/root_agent.md`
+(after "Bound Parallelism" — no existing wind-down section to extend)
+gives the root agent a plain-language reading of the numbers: rough
+signal (tool-call volume with no new coverage growth suggests circling,
+not a rule to automate), and prefers asking an agent to wrap up over
+`stop_agent` so it can still hand off partial findings. Explicitly no
+score, no threshold, no auto-stop anywhere in this piece.
+
+**Verified, including one test-isolation trap worth recording**:
+`tests/test_agent_roi.py` (5 tests) — the tool-call counter increments
+independently per agent, `get_live_llm_usage()` demonstrably differs
+from the stale `get_total_llm_usage()` (proving the bug fix is real, not
+assumed), `_agent_roi_suffix()` renders the exact requested scenario (a
+simulated 62-tool-call agent with 3 coverage entries) correctly, graceful
+handling with no report state/no activity, and a full SDK-level
+`view_agent_graph()` invocation (via a real `ToolContext`, not a bare
+`RunContextWrapper` — the SDK's error-handling path needs the former)
+confirming the rendered line for a running agent carries ROI and a
+completed agent's line does not. **One test failure surfaced only in the
+full suite, not in isolation, traced to ground before touching
+anything**: `view_agent_graph` is the real shared module-level
+`FunctionTool` singleton, and an earlier test elsewhere in the suite
+building a real agent had already wrapped it in place (via the
+idempotent `_with_bounded_result`) — so the test's own direct call to
+`.on_invoke_tool()` was itself a real, counted tool call once that
+wrapping existed, which is correct production behavior the test's
+hardcoded `== 2` assertion didn't account for. Fixed the test (assert
+`>=` a captured baseline, with the reasoning documented inline), not the
+production code, since the trace confirmed there was nothing wrong with
+the code. Full suite re-run clean: 1244 passed, 1 skipped, same
+pre-existing/unrelated `test_pricing.py` failure as every other piece in
+this track.
+
+**Committed** as its own commit.
+
+**This closes the cost-reduction track's original eight-piece list**
+(§21-§24 combined): Pieces 1-5 fully implemented, Piece 6 implemented
+narrower than originally scoped (route-shaped duplication was already
+solved by Piece 2; the real gap was non-route shared files), Piece 7
+downgraded to a small documentation consolidation after research showed
+its stated problem didn't exist, Piece 8 implemented as designed. No
+piece introduced an LLM-generated score, confidence percentage, or
+prediction anywhere — every new field across all eight pieces is either
+a plain count, a categorical read of deterministic data, or free text a
+human/agent judgment already governs elsewhere (`counterevidence.md`,
+`severity_calibration.md`). Five real bugs were caught by actually
+building tests/tracing data flow rather than trusting design review
+alone (Piece 2's window-direction bug, Piece 3's `signal_class` polarity
+bug, Piece 4's unrecorded object-ownership and unpersisted BFLA-matrix
+gaps, Piece 8's stale-cache bug) — the throughline of the whole track.
 

@@ -28,6 +28,84 @@ def _ctx(ctx: RunContextWrapper) -> dict[str, Any]:
     return ctx.context if isinstance(ctx.context, dict) else {}
 
 
+#: Wall-clock, not tool-call-count, because coverage entries carry a
+#: timestamp already and nothing tracks "tool-call count at time of
+#: recording" - adding that would mean touching coverage/tools.py's schema
+#: for a metrics-only piece. Documented here so the choice is explicit,
+#: not accidental.
+_COVERAGE_TRAILING_WINDOW_MINUTES = 10
+
+
+def _agent_roi_suffix(agent_id: str) -> str:
+    """Render one agent's ROI columns for a ``view_agent_graph`` line.
+
+    Every number here is real, read from data that already exists
+    elsewhere, never fabricated and never a score:
+
+    - tokens/cost share: ``strix.report.usage.LLMUsageLedger``, already
+      tracked per agent.
+    - tool_calls: ``strix.tools.agent_metrics.tools`` — the one genuinely
+      new counter this added, incremented at the shared tool-invocation
+      wrapper in ``strix/agents/factory.py`` so every tool call counts
+      regardless of which specific tool it was.
+    - coverage: ``strix.tools.coverage.tools.get_coverage_entries()``,
+      filtered by ``agent_id`` (already recorded on every entry).
+
+    This is information only — no threshold here decides anything, and
+    nothing calls this to auto-stop an agent. See
+    ``coordination/root_agent.md``'s "Reading Agent ROI" for how a root
+    agent is expected to use these numbers.
+    """
+    from strix.report.state import get_global_report_state
+    from strix.tools.agent_metrics.tools import get_tool_call_count
+    from strix.tools.coverage.tools import get_coverage_entries
+
+    parts: list[str] = []
+
+    state = get_global_report_state()
+    if state is not None:
+        try:
+            for agent_usage in state.get_live_llm_usage().get("agents", []):
+                if agent_usage.get("agent_id") != agent_id:
+                    continue
+                total_tokens = agent_usage.get("total_tokens")
+                if total_tokens is not None:
+                    piece = f"tokens: {int(total_tokens):,}"
+                    cost = agent_usage.get("cost")
+                    if cost:
+                        piece += f" (cost share: ${float(cost):.2f})"
+                    parts.append(piece)
+                break
+        except Exception:
+            logger.debug("could not resolve token usage for agent %s", agent_id, exc_info=True)
+
+    parts.append(f"tool_calls: {get_tool_call_count(agent_id)}")
+
+    try:
+        entries = [e for e in get_coverage_entries() if e.get("agent_id") == agent_id]
+        now = datetime.now(UTC)
+        recent = 0
+        for entry in entries:
+            created_at = entry.get("created_at")
+            if not created_at:
+                continue
+            try:
+                ts = datetime.strptime(str(created_at), "%Y-%m-%d %H:%M:%S UTC").replace(tzinfo=UTC)
+            except ValueError:
+                continue
+            if (now - ts).total_seconds() <= _COVERAGE_TRAILING_WINDOW_MINUTES * 60:
+                recent += 1
+        noun = "entry" if len(entries) == 1 else "entries"
+        parts.append(
+            f"coverage: {len(entries)} {noun} total, {recent} in the last "
+            f"{_COVERAGE_TRAILING_WINDOW_MINUTES} min"
+        )
+    except Exception:
+        logger.debug("could not resolve coverage counts for agent %s", agent_id, exc_info=True)
+
+    return " — " + " | ".join(parts) if parts else ""
+
+
 def _render_completion_report(
     *,
     agent_name: str,
@@ -85,6 +163,13 @@ async def view_agent_graph(ctx: RunContextWrapper) -> str:
     ``completed`` / ``crashed`` / ``stopped``. Output is an indented
     bullet list with status in brackets; the agent that called this tool
     is marked ``← you``.
+
+    A ``running``/``waiting`` agent's line also carries real ROI numbers —
+    tokens spent, cost share, cumulative tool calls, and coverage entries
+    recorded (total, and in the last 10 minutes) — so you can judge wind-down
+    the same way you'd judge overall scan budget, but per agent. These are
+    plain counts, never a score or a "this agent looks stuck" verdict; see
+    `coordination/root_agent.md`'s "Reading Agent ROI" for how to read them.
     """
     inner = _ctx(ctx)
     coordinator = coordinator_from_context(inner)
@@ -103,7 +188,8 @@ async def view_agent_graph(ctx: RunContextWrapper) -> str:
     def render(aid: str, depth: int) -> None:
         status = statuses.get(aid, "?")
         marker = "  ← you" if aid == me else ""
-        lines.append(f"{'  ' * depth}- {names.get(aid, aid)} ({aid}) [{status}]{marker}")
+        roi = _agent_roi_suffix(aid) if status in _ACTIVE_STATUSES else ""
+        lines.append(f"{'  ' * depth}- {names.get(aid, aid)} ({aid}) [{status}]{roi}{marker}")
         for child, p in parent_of.items():
             if p == aid:
                 render(child, depth + 1)
