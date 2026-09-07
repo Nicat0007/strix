@@ -1,6 +1,6 @@
 ---
 name: parameter-mutation-testing
-description: Shared three-way mutation set and diff-and-classify engine behind mass assignment, BFLA, and IDOR testing — generates no candidate values itself, consumes per-class values from those skills and produces one structured diff record they all read the same way
+description: Shared three-way mutation set and diff-and-classify engine behind mass assignment, BFLA, and IDOR testing — generates no candidate values itself, consumes per-class values from those skills and produces one structured diff record they all read the same way; also extends to multi-actor replay for black-box differential authorization when 2+ provisioned accounts exist
 ---
 
 # Parameter Mutation Testing
@@ -68,6 +68,7 @@ expectations: {
   "<json-path-or-header>": "unchanged"                  // must equal Control exactly
                           | "reflects_mutation:<value>"  // must equal what was just sent
                           | "bounded:<min>,<max>"         // server-recomputed numeric (totals, balances)
+                          | "owner_scoped:<actor_id>"     // actor-replay only — see "Actor Replay" below
 }
 ```
 
@@ -82,6 +83,7 @@ two separate records):
 ```jsonc
 {
   "comparison_id": "orders:GET:/orders/{id}:X-cross-owner",
+  "comparison_axis": "mutation",  // "mutation" | "actor_replay" — see "Actor Replay" below
   "status":  { "baseline_code": 200, "candidate_code": 200, "changed": false },
   "size":    { "baseline_bytes": 842, "candidate_bytes": 850, "delta_bytes": 8,
                "delta_pct": 0.95, "beyond_noise": false },
@@ -96,6 +98,7 @@ two separate records):
   "timing": { "baseline_ms_median": 120, "candidate_ms_median": 118, "samples": 3, "usable": false },
   "retry_required": false,
   "signal_class": "none",
+  "owner_scope_verdict": "not_applicable",  // actor_replay-only reading — see "Actor Replay" below
   "noise_filtered_fields": ["headers.Date", "value_deltas.meta.request_id"],
   "notes": ""
 }
@@ -135,6 +138,102 @@ new field appeared" or "an array grew" — whether that's a mass-assignment
 win, an IDOR content leak, or a BFLA side-effect is the calling skill's
 reading, and `counterevidence.md` still gates whether a `signal_class` hit
 becomes a filed finding (see "Using a Diff Record" below).
+
+These five rules are unchanged for every record in this file, including
+actor-replay ones (below) — but for an actor-replay comparison, reading
+what a given `signal_class` *means* inverts relative to a mutation
+comparison. See "Actor Replay (Differential Authorization)" for why, and
+for `owner_scope_verdict`, the field that carries the correctly-inverted
+reading so a caller never has to remember to invert it by hand.
+
+### Actor Replay (Differential Authorization)
+
+Everything above compares one actor's own request against a mutation of
+itself. When `account_provisioning.md` has produced 2+ authenticated
+actors (tokens in `/workspace/recon/auth_tokens.txt` /
+`auth_accounts.jsonl`), the same Layer B diff/`signal_class` engine —
+unchanged — also answers a different, higher-signal question for
+black-box BOLA/BFLA: replay the identical, **unmutated** Control request
+as a different actor's session, and diff the two actors' responses
+against each other.
+
+This is additive, never a replacement for the mutation sweep, because it
+tests a different code path. A pure BOLA hole can look completely clean
+under same-actor ID-mutation — Actor A's own tampered ID correctly gets a
+403 from an ID-validity check — while Actor B's own, perfectly ordinary
+request to Actor A's real object is what actually leaks, because the
+session-to-owner check that should catch *that* is a separate code path
+the ID-mutation test never exercises.
+
+**Precondition.** This entire section is a no-op below 2 authenticated
+actors. With 0 or 1 actor, Layers A/B and the mutation sweep behave
+exactly as already documented above — there is no degraded
+single-actor form of "replay as another actor"; that is not a meaningful
+test with one principal.
+
+**Trigger tiers, per family** (see Family Sweep below — this is a
+per-family decision, not a per-member one):
+
+1. **Every family member whose own single-actor sweep already produced
+   `signal_class != "none"`** — the Control is already captured, so the
+   marginal cost is near zero. Run actor replay here unconditionally.
+2. **One representative member per family, always** — even when every
+   member's single-actor signal was `"none"`. Required, not optional:
+   actor-vs-actor is a different axis from mutation-vs-control, so it
+   cannot be gated purely on the mutation signal (see the example
+   above). Bounding this to one member per family, not every member,
+   keeps the always-run cost at O(families) — the same Control-reuse
+   discipline Layer A already applies to mutation testing.
+3. **Every other member**: actor replay only if its own single-actor
+   sweep flagged it (same rule as tier 1).
+
+**Mechanics.** For a family's Control request (captured once, per the
+existing reuse rule), replay it — byte-identical: same path, method,
+params, object ID — as each additional actor's session. Diff every actor
+pair using the same, unmodified Layer B schema and `signal_class` rules.
+Two additive fields carry the new axis:
+
+- `comparison_axis: "mutation" | "actor_replay"` — lets a reader tell the
+  two kinds of record apart without guessing from `comparison_id`.
+- The `owner_scoped:<actor_id>` Caller Contract expectation (see above) —
+  the calling skill declares which actor is legitimately entitled to a
+  real, successful response to this exact request: the object's owner
+  for `idor.md`'s axis, or the actor with sufficient privilege for the
+  action for `broken_function_level_authorization.md`'s axis. Either
+  way, every other actor replaying the identical request is expected to
+  be denied or to receive their own, different response.
+
+**Reading an actor-replay record — the polarity is inverted, and this is
+the one place a plain `signal_class` reading would mislead.** For a
+mutation record, `signal_class: "none"` means boring — nothing happened.
+For an actor-replay record against an `owner_scoped:<actor_id>`
+expectation, `signal_class: "none"` (the non-owner actor's response is
+structurally identical to the owner's) is the strongest possible signal:
+a private object served unchanged to a principal who does not own it. A
+real diff — denial, or the non-owner's own distinct data — is the *safe*,
+expected outcome here, the reverse of every other record in this file.
+Getting this backwards would silently read the worst case as `"none"`
+and move on, so it is computed as its own deterministic field rather
+than left for a caller to remember to invert by hand:
+
+- `owner_scope_verdict: "not_applicable"` — no `owner_scoped:<actor_id>`
+  expectation was declared for this comparison (every mutation-axis
+  record, and any actor-replay record run without a declared owner).
+- `owner_scope_verdict: "isolated"` — an owner is declared, the
+  replaying actor is not the owner, and `signal_class != "none"`: the
+  non-owner's response differed from the owner's baseline. The expected,
+  safe outcome.
+- `owner_scope_verdict: "leak_suspected"` — an owner is declared, the
+  replaying actor is not the owner, `signal_class == "none"`, **and**
+  the shared status code is a 2xx success. That last condition rules out
+  the coincidental case of two actors both hitting the same denial or
+  empty response — also `signal_class: "none"`, but not a content leak.
+
+Like `signal_class`, `owner_scope_verdict` never carries a security
+verdict on its own: `"leak_suspected"` is a lead for `idor.md`'s Impact
+Escalation gate (real cross-user content proof, not a status-code diff
+alone) and `counterevidence.md`'s full closure discipline, exactly like
+every other record this file produces.
 
 ## Class-Specific Generators Stay Put
 
@@ -213,10 +312,13 @@ already established for everything else under `/workspace/recon/`.
   against `entry_points.md`'s route/handler rows when white-box source is
   also available (a whitebox scan gets the richer of the two, never a
   third redundant list).
-- One row per family: family key, member endpoints, kind, and open
+- One row per family: family key, member endpoints, kind, open
   mutation candidates (which T/X pairs are untested vs already run, and
-  their last `signal_class`) — a worklist ledger, not a hit list, matching
-  `entry_points.md`'s own "map to read from, not a report" framing.
+  their last `signal_class`), and `actor_replay_status`
+  (`not_run` | `representative_run` | `per_member_run` — see "Actor
+  Replay (Differential Authorization)" below) — a worklist ledger, not a
+  hit list, matching `entry_points.md`'s own "map to read from, not a
+  report" framing.
 - Any of `mass_assignment.md`/`broken_function_level_authorization.md`/
   `idor.md`'s testing agents read this file before generating their own
   family list, and update a family's row (not append a duplicate) when
@@ -240,6 +342,11 @@ through whichever vuln skill generated the mutation:
 - `"status"` on a BFLA X candidate (200 where T got 403) → the candidate
   for `broken_function_level_authorization.md`'s Impact Escalation gate,
   same caveat.
+- `owner_scope_verdict: "leak_suspected"` on an actor-replay record →
+  the candidate for `idor.md`'s Impact Escalation gate. Read
+  `owner_scope_verdict`, not `signal_class`, for these records — see
+  "Actor Replay (Differential Authorization)" for why the two disagree
+  on which value means "interesting" here.
 
 Every one of these still passes through `counterevidence.md`'s full
 closure discipline before it becomes `confirmed` — a diff record narrows
@@ -264,6 +371,10 @@ request/diff loop from scratch and burning tokens re-establishing what
 - `custom/source_aware_sast.md` — `entry_points.md` is this file's
   white-box sibling artifact, not a section to merge into; see "Where the
   Family Map Lives".
+- `reconnaissance/account_provisioning.md` — the source of the 2+
+  authenticated actors "Actor Replay (Differential Authorization)"
+  requires; this file consumes the tokens it saves to
+  `/workspace/recon/auth_tokens.txt` / `auth_accounts.jsonl`.
 
 ## Summary
 
@@ -274,3 +385,10 @@ skills' "did anything change" question into the same deterministic
 `signal_class`, computed once per family instead of once per endpoint —
 the candidate values stay vuln-specific; the request/diff/classify loop
 around them does not.
+
+When 2+ provisioned actors exist, the same schema and engine also answer
+a second, additive question — not "did this mutation change anything"
+but "did two different principals get the same answer to the identical
+request" — tiered so it costs O(families), not O(endpoints × actors),
+and read through `owner_scope_verdict` rather than `signal_class`, since
+for this one comparison "identical" is the signal, not the noise floor.

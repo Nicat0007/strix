@@ -1927,3 +1927,120 @@ for black-box BOLA/BFLA, gated on 2+ provisioned accounts from
 `account_provisioning.md`). Full design already exists in this
 conversation; next step is starting it.
 
+**Piece 3 — Differential Authorization: implemented and committed.** New
+`### Actor Replay (Differential Authorization)` subsection in
+`analysis/parameter_mutation_testing.md`'s Layer B, extending — not
+replacing — the existing single-actor three-way mutation engine with
+tiered multi-actor replay for black-box BOLA/BFLA, gated on 2+
+provisioned actors from `account_provisioning.md`. Skill-only, no
+Python/Dockerfile touched.
+
+**A real design gap found while building the worked test (item 6 of the
+plan), fixed before shipping — the most important finding of this
+piece.** The original design said an actor-replay comparison reuses
+Layer B's existing `signal_class` engine "unchanged." Building the
+required test scenario (a single-actor mutation test that looks clean,
+an actor-replay comparison that catches the same endpoint's real leak)
+surfaced that this is subtly wrong: `signal_class`'s existing 5 rules
+compute `"none"` when two responses are identical — correct as "boring,
+nothing happened" for a mutation-vs-control comparison, but for an
+actor-replay comparison where a non-owner's response is *supposed* to
+differ from the owner's, an identical response (`"none"`) is the
+strongest possible leak signal, not the absence of one. Applying the
+unmodified rules naively would have silently read the worst case as
+`"none"` and moved on — exactly the wrong direction. Fixed by adding one
+new field, `owner_scope_verdict` (`not_applicable` / `isolated` /
+`leak_suspected`), computed from the *same* underlying diff record via
+its own small, deterministic rule set (still no LLM judgment, still not
+a score) rather than changing `signal_class` itself, which stays correct
+and meaningful for the far more common mutation-axis case:
+- `not_applicable` — no `owner_scoped:<actor_id>` expectation declared
+  (every mutation-axis record; the default, backward-compatible case).
+- `isolated` (safe/expected) — owner declared, replaying actor isn't the
+  owner, and the two responses differed (`signal_class != "none"`).
+- `leak_suspected` — owner declared, replaying actor isn't the owner,
+  the two responses are identical (`signal_class == "none"`), **and**
+  the shared status is a 2xx success — that last guard specifically
+  rules out two actors coincidentally sharing an identical denial/empty
+  response (also `signal_class: "none"`, but not a content leak), a
+  false-positive shape confirmed and guarded against in the test below.
+
+**Design correction, generalizing an initially IDOR-flavored term**: the
+first draft of `owner_scoped:<actor_id>` was written purely in
+object-ownership language ("declares which actor owns the object"),
+which doesn't fit `broken_function_level_authorization.md`'s privilege
+axis (there's no "object" being owned, just an action a role either can
+or can't invoke). Reworded to "the actor legitimately entitled to a real,
+successful response to this exact request" — object owner for IDOR,
+sufficiently-privileged actor for BFLA — so the same expectation kind
+and the same `owner_scope_verdict` reading serve both cross-referencing
+skills without a second, parallel mechanism.
+
+**Also added, per the design**: `comparison_axis: "mutation" |
+"actor_replay"` on the Diff Record Schema (additive, so existing
+mutation-axis records are unaffected); the trigger tiers exactly as
+designed (every already-flagged family member + one representative
+member per family always, bounding the always-run cost at O(families)
+rather than O(members)); `actor_replay_status` added to
+`mutation_candidates.md`'s per-family row schema; cross-reference
+sentences in `idor.md` and `broken_function_level_authorization.md`
+pointing at the new subsection (each also told to read
+`owner_scope_verdict`, not `signal_class`, for these records); one
+sentence in `account_provisioning.md` noting `parameter_mutation_testing.md`
+consumes the tokens it saves.
+
+**Verified, not assumed** — since this piece is schema/spec-only (no
+Python implementation exists anywhere for Layer B's engine; it's a
+skill file an LLM agent interprets at request-time, not code this repo
+runs), "testing" it meant implementing the documented algorithm exactly
+as written in a throwaway Python simulation and checking it against a
+synthetic scenario, the same standard Piece 2 was held to:
+- **The exact "looks clean, actor-replay catches it" scenario the
+  design claims to handle**: a single-actor mutation test using a
+  synthetic (non-existent) candidate object ID against a backend that
+  wraps a "not found" condition in the same 200-status/same-shape
+  envelope as a real success (a real, common API anti-pattern) —
+  correctly produces `signal_class: "none"` on the single-actor side,
+  masking a genuinely missing ownership check. The corresponding
+  actor-replay comparison — a second real provisioned actor requesting
+  the first actor's real, existing object ID, byte-identical request,
+  no mutation — correctly produces `signal_class: "none"` (same
+  response) and `owner_scope_verdict: "leak_suspected"`, exactly the
+  case mutation testing alone could not have caught (it never had a
+  second real object ID to try).
+- **Negative control 1**: a properly isolated endpoint (a denied,
+  differently-shaped response) correctly reads `isolated`, not a false
+  positive.
+- **Negative control 2, the one that specifically validates the 2xx
+  guard added during design**: two actors coincidentally sharing an
+  identical 404 (`signal_class: "none"` too, since both responses are
+  identical) correctly reads `isolated`, not `leak_suspected` — proving
+  the guard against the "shared denial" false-positive shape actually
+  works, not just that it was written down.
+- **Tiering logic**: a synthetic 3-member family (one representative/
+  clean, one already-flagged by its own single-actor signal, one clean
+  and non-representative) correctly selects exactly 2 of 3 members for
+  replay — confirming the O(families) cost bound is real, not just
+  asserted.
+- **Sanity checks**: a mutation-axis record (`owner_declared=False`)
+  and the owner's own replay of their own object both correctly read
+  `not_applicable`.
+- All 5 edited skill files confirmed to still load cleanly via
+  `_qualified_skill_file_for_name` with balanced code-fence counts.
+  `tests/test_skill_dir_extension.py` (20 tests) unchanged. Full suite
+  re-run clean: 1232 passed, 1 skipped, same pre-existing/unrelated
+  `test_pricing.py` litellm-alias failure as Pieces 1 and 2.
+
+**Committed** as its own commit — skill-only, no shared blast radius
+with Pieces 1/2's Python plumbing or Piece 2's bash/Python distillation
+script.
+
+**All three pieces from the external architecture review are now
+implemented and committed.** None introduced an LLM-generated
+fake-precision score anywhere: Piece 1's `corroborations` is a plain
+count of distinct confirming targets, Piece 2's structural facts carry
+no vulnerability judgment at all, and Piece 3's `owner_scope_verdict`
+is a categorical read of a deterministic diff, never a confidence
+number — the stated constraint from the start of this track held
+through all three.
+

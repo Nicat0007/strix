@@ -29,7 +29,11 @@ that turn a swapped ID into a signal are shared with
 `broken_function_level_authorization.md` and `mass_assignment.md`, in
 `analysis/parameter_mutation_testing.md` — load it alongside this skill,
 and see its Family Sweep section for grouping endpoints (including the
-nested/second-order case below) before sweeping them individually.
+nested/second-order case below) before sweeping them individually. When
+2+ accounts are provisioned (`account_provisioning.md`), that same file's
+"Actor Replay (Differential Authorization)" section is the highest-signal
+black-box BOLA technique available — read `owner_scope_verdict`, not
+`signal_class`, when using it.
 
 **Reference Locations**
 - Paths, query params, JSON bodies, form-data, headers, cookies

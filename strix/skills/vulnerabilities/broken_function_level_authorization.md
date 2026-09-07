@@ -18,7 +18,12 @@ requests; the three-way mutation set and diff-and-classify mechanics that
 turn a candidate into a signal are shared with `mass_assignment.md` and
 `idor.md`, in `analysis/parameter_mutation_testing.md` — load it alongside
 this skill for a systematic sweep instead of hand-rolling the
-before/after comparison per endpoint.
+before/after comparison per endpoint. When 2+ accounts are provisioned
+(`account_provisioning.md`), that same file's "Actor Replay
+(Differential Authorization)" section replays a request across roles
+directly — a lower-privileged actor's identical response to a
+higher-privileged actor's request is `owner_scope_verdict:
+"leak_suspected"`, a direct BFLA lead.
 
 ## Attack Surface
 

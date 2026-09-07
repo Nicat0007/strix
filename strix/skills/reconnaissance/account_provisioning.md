@@ -78,7 +78,7 @@ Reach for this only when human-in-the-loop verification isn't available or didn'
 
 ## Saving Tokens for Reuse
 
-Write every obtained credential/token to `/workspace/recon/auth_tokens.txt` (or a structured `auth_accounts.jsonl` — principal, role, tenant, token/cookie, how it was obtained), the same shared-artifact convention the rest of recon uses (see `asset_discovery.md`, `coordination/root_agent.md`). Every subagent doing authenticated testing reads this file first instead of re-registering.
+Write every obtained credential/token to `/workspace/recon/auth_tokens.txt` (or a structured `auth_accounts.jsonl` — principal, role, tenant, token/cookie, how it was obtained), the same shared-artifact convention the rest of recon uses (see `asset_discovery.md`, `coordination/root_agent.md`). Every subagent doing authenticated testing reads this file first instead of re-registering — including `analysis/parameter_mutation_testing.md`'s "Actor Replay (Differential Authorization)" section, which is inert below 2 recorded actors here and is the highest-signal black-box BOLA/BFLA technique available once this file has provisioned them.
 
 ## Discipline
 
