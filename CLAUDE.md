@@ -1667,3 +1667,164 @@ a foreign or unrequested change.
 Committed together as their own small commit (grouped only because both
 were small and under-logged, not because they're related to each other).
 
+## 21. INFRASTRUCTURE-LEVEL IMPROVEMENTS FROM AN EXTERNAL ARCHITECTURE
+    REVIEW — THREE PIECES, PIECE 1 IMPLEMENTED
+
+New track from an external architecture review, deliberately scoped to
+extend existing systems (`coverage.py`, `entry_points.md`,
+`parameter_mutation_testing.md`'s Layer B) rather than introduce new
+LLM-judgment mechanisms — explicitly avoiding fake-precision numeric
+scores (confidence percentages etc.), matching this project's existing
+"real judgment stays with the LLM, tools just gather evidence" principle.
+Three pieces, designed together, implemented one at a time, each reviewed
+before the next starts.
+
+**Piece 1 — Negative Knowledge (persistent ruled-out cache): implemented
+and committed.** `record_coverage`'s `ruled_out`/`no_issue_found` entries
+live only in one scan's ledger (`{state_dir}/coverage.json`) and vanish
+after `finish_scan`. A verdict like "this WordPress search-replace
+serializer is safe because it rewrites `s:<len>` headers correctly before
+writing back" is not target-specific — the same defensive pattern recurs
+across every plugin in that family — so re-deriving it from scratch on
+every future scan wastes exactly the reasoning this cache exists to carry
+forward.
+
+**Design correction found during the design pass, before any code was
+written**: the matching key `(framework, vulnerability_class,
+mechanism_signature)` cannot be known before an agent has actually read
+the code, unlike the target-identity key from the parked Phase-2 design
+(§8) which is known before any agent runs. So this could not be a
+pre-dispatch text injection into `build_root_task()` the way §8 sketched
+— it had to be a runtime tool call an agent makes mid-investigation. Also
+decided: promotion to the persistent cache is a **separate, explicit**
+tool call, never an automatic mirror of every `ruled_out`/`no_issue_found`
+coverage entry — most such entries are target-specific ("this IP
+allowlists our runner") and would poison a cross-target cache if
+auto-promoted. This keeps the judgment call ("does this reasoning
+generalize") with the LLM as a binary decision, never a score.
+
+**Built:**
+- **New module** `strix/tools/negative_knowledge/tools.py` (+
+  `__init__.py`) — mirrors `strix/tools/coverage/tools.py`'s shape
+  (module-level dict + `RLock` + atomic tempfile-rename persist,
+  `hydrate_*_from_disk()` entry point) but persists to a **fixed
+  cross-scan path**, `~/.strix/negative_knowledge.json`, not a run's own
+  `.state/` dir — same `~/.strix/*.json` convention as `cli-config.json`/
+  `mcp-servers.json`/`update-check.json`, all plain JSON with atomic
+  writes; no SQLite anywhere in this codebase to match, so JSON was the
+  right call, not a new pattern.
+  - **Matching key**: `(framework, vulnerability_class, signature_hash)`,
+    entry dict key literally `f"{framework}||{vulnerability_class}||{signature_hash}"`
+    for O(1) exact-tier lookup and a natural upsert (no separate
+    duplicate-detection pass needed, unlike `coverage.py`'s
+    `_duplicate_of_locked`, because the composite key *is* the identity
+    here). `vulnerability_class` is validated against
+    `get_available_skills()["vulnerabilities"]` — the same canonical
+    skill-name vocabulary `strix/report/coverage.py` already treats as
+    authoritative — rather than inventing a second taxonomy.
+    `signature_hash` is `sha256` of the sorted, deduped, lowercased
+    `mechanism_signature` token list — a pure function of the token
+    *set*, never the order or casing the agent happened to use, and
+    never an LLM-invented string. Tokens must be ≥2 and are documented
+    (in the tool docstring and in `counterevidence.md`) as
+    library/framework/language built-in API names only, never
+    project-specific identifiers — that discipline (not fuzzy matching)
+    is what keeps the key from being "too strict to ever match" while
+    staying "too loose" -resistant. Considered and explicitly deferred: a
+    fuzzy/Jaccard token-overlap tier between exact and bucket matching —
+    real, deterministic, non-LLM math, but added complexity not needed
+    for a first cut; noted as a possible v2.
+  - **Two-tier query result**: `exact_match` (identical key — a strong
+    prior) and `related_in_bucket` (same `framework`+`vulnerability_class`,
+    different signature — background context only, explicitly documented
+    as carrying no signal about the current candidate).
+  - **`corroborations`**: a plain count of *distinct* `source_target_hash`
+    values that have confirmed this exact signature — never a confidence
+    score. `source_target_hash` is `sha256` of this scan's
+    `target_identity()` (reusing the §8/§9 utility from
+    `strix/utils/target_identity.py` via `build_scan_targets()` +
+    `strix.report.state.get_global_report_state()`), stored only as a
+    hash so the cache file never becomes a readable client list, and
+    stripped entirely from the agent-facing `_public_entry()` response.
+    Re-recording from the *same* target does not double-count (tracked
+    via an internal `source_target_hashes` list per entry); a genuinely
+    different target increments it by exactly one.
+  - `hydrate_negative_knowledge_from_disk(path=None)` takes a full file
+    path (not a directory to join, unlike `coverage.py`'s
+    `hydrate_coverage_from_disk(state_dir)`) since this store isn't
+    per-run-state-dir-shaped; defaults to `~/.strix/negative_knowledge.json`.
+    `_persist_locked()` is a no-op until hydrate has run — same guard as
+    `coverage.py` — so a caller that forgets to hydrate (e.g. a test) can
+    never accidentally write into the real host `~/.strix/` path.
+- **New settings**: `NegativeKnowledgeSettings.enabled` (env
+  `STRIX_NEGATIVE_KNOWLEDGE`, default `true`) in `strix/config/settings.py`
+  + `strix/config/__init__.py` export — same single-field-toggle shape as
+  `TelemetrySettings`. Disabling skips hydration entirely in
+  `core/runner.py` (the store never even reads the file), and both tools'
+  wrapper functions short-circuit to a `success: true, enabled: false`
+  response that persists nothing — so a run against confidential/regulated
+  code can opt out of both reading and writing the cross-scan cache.
+- **Wiring**: `strix/agents/factory.py`'s always-on `_BASE_TOOLS` tuple
+  gains `query_negative_knowledge`/`record_negative_knowledge` next to
+  `record_coverage`/`update_coverage`/`list_coverage`. `strix/core/runner.py`
+  gains one more `hydrate_*_from_disk()` call alongside the existing
+  todos/notes/coverage/threat-model ones, gated on
+  `settings.negative_knowledge.enabled`.
+- **`analysis/counterevidence.md`** — new "Negative Knowledge — A Prior
+  From a Past Scan, Never a Skip" section (placed right after "What DOES
+  Rule Out a Candidate", since this is a persistent variant of exactly
+  that discipline): when to query (once concrete API names are known, not
+  before), what a hit means (strong prior on an exact match, background
+  noise on a bucket-only match, never a skip either way — one fast
+  re-verification of the matched guard, same as any other `ruled_out`),
+  and when to promote (reasoning transfers across codebases of the same
+  framework, never "this deployment happens to be fine").
+
+**Verified, not assumed:**
+- Manual two-*process* test (genuinely separate `python3` invocations
+  sharing a temp `negative_knowledge.json`, in
+  `/tmp/.../scratchpad/nk_scan1.py` + `nk_scan2.py`, not kept in the repo):
+  scan 1 recorded an entry; scan 2, a fresh interpreter, queried it with
+  deliberately different casing (`WordPress-Plugin` vs `wordpress-plugin`)
+  and token order and got the exact-tier hit back with the schema intact;
+  re-recording from a second simulated target incremented
+  `corroborations` from 1→2; re-recording again from that *same* simulated
+  target did not double-count; a different signature in the same bucket
+  showed up only under `related_in_bucket`, never as `exact_match`;
+  `source_target_hashes` never appeared in any agent-facing response.
+- `tests/test_negative_knowledge_tool.py` — 21 new tests (validation,
+  exact/bucket matching, corroboration counting incl. concurrent writers
+  via a `ThreadPoolExecutor` + `threading.Barrier` mirroring
+  `test_coverage_tool.py`'s own concurrency test shape, disabled-mode
+  no-op, disk round-trip via re-hydrate).
+- **Full suite regression, and a real bug it caught**: the first full run
+  (1218 passed / 15 failed) surfaced that 5 pre-existing test fixtures —
+  `tests/test_runner_{interrupt,mcp,rate_limit,root_prompt,teardown}.py`
+  — build a `types.SimpleNamespace` settings stub for `runner.py` that
+  didn't have a `negative_knowledge` attribute, so the new
+  `settings.negative_knowledge.enabled` read in `run_strix_scan()`
+  crashed every one of them with `AttributeError`. Fixed by adding
+  `negative_knowledge=types.SimpleNamespace(enabled=False)` to each
+  fixture (one line per file, same shape as the existing `runtime=`
+  entry each already had) rather than making `runner.py` defensively
+  `getattr` around a real settings field — the stub was incomplete, not
+  the production code wrong. Re-ran full suite clean after the fix:
+  **1232 passed, 1 skipped**, only `test_pricing.py::test_resolves_common_bare_model_names`
+  still failing — confirmed via `git stash` to fail identically on `main`
+  before any of this work (a stale `grok-4.5` → `xai/grok-4.5` litellm
+  alias that upstream has since routed through `openrouter/x-ai/grok-4.5`
+  instead), unrelated and pre-existing, not touched.
+
+**Committed** as `998ebf1` — code + skill + the 5 test-fixture fixes in
+one commit (13 files, 917 insertions).
+
+**Not yet started**: Piece 2 (Attack Surface Compiler — normalizing
+`entry_points.md`'s raw ast-grep structural sweep into a per-file/
+per-route summary of routes, sources, sinks, and auth-check presence, as
+a new sibling artifact `attack_surface.md` generated immediately after
+the existing 3-tier distillation in `source_aware_sast.md`) and Piece 3
+(Differential Authorization — extending `parameter_mutation_testing.md`'s
+Layer B with tiered multi-actor replay for black-box BOLA/BFLA, gated on
+2+ provisioned accounts from `account_provisioning.md`). Full designs for
+both already exist in this conversation; next step is starting Piece 2.
+
