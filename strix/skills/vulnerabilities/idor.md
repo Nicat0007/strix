@@ -83,6 +83,14 @@ first instead of picking two accounts arbitrarily.
 **UUID/Opaque ID Sources**
 - Logs, exports, JS bundles, analytics endpoints, emails, public activity
 - Time-based IDs (UUIDv1, ULID) may be guessable within a window
+- Whatever you observe here — sequential, random, or genuinely opaque —
+  record it as `observed_id_pattern` on this family's row in
+  `/workspace/recon/mutation_candidates.md` (see
+  `analysis/parameter_mutation_testing.md`'s "Where the Family Map
+  Lives"). This is the one input `analysis/candidate_triage.md`'s
+  cross-source fusion rule needs that only a black-box observation can
+  supply — a whitebox read of the route alone can't tell you what IDs
+  actually look like in practice.
 
 ## Key Vulnerabilities
 

@@ -2865,3 +2865,61 @@ other piece in this track.
 
 **Committed** as its own commit.
 
+### Piece 13 — Cross-Source Correlation: implemented and committed
+
+Fuses a whitebox structural fact (`attack_surface.md`) with an
+independently-observed black-box behavioral fact (recon's crawled ID
+values) into `candidate_triage.md`'s `evidence_strength` — skill-only,
+same as Pieces 9-12's judgment-layer pieces.
+
+**Research finding that changed the plan**: grepped every
+`reconnaissance/*.md` file for any existing record of black-box
+ID-pattern observations (sequential/predictable IDs seen during
+crawling) — **nothing existed**. `idor.md` names the *technique* (look
+for sequential IDs) but had no field or file anywhere an agent wrote the
+observation down. Same shape as Piece 4's account-ownership gap and
+Piece 10's `discloses`/`requires` gap: the fusion this piece wanted
+couldn't happen because one of its two required inputs was never
+captured anywhere.
+
+**Fixed at the source, reusing the existing artifact rather than adding
+a new one**: `mutation_candidates.md` was already documented as the
+artifact that explicitly cross-references black-box recon facts against
+white-box structural rows per family — exactly the right home. New
+optional field on its row schema, `observed_id_pattern: sequential |
+random | opaque | unknown`, recorded by whichever agent first observes
+real ID values for that family. Explicitly **not** derived from the
+parameter's name (a field called `id` can still be a random UUID) and
+explicitly distinguishes `unknown` ("checked, couldn't tell") from
+simply leaving the field unset ("nobody's looked yet") — the same
+unset-vs-checked distinction `needs_follow_up` already draws elsewhere.
+`idor.md`'s "UUID/Opaque ID Sources" points agents at where to record it.
+
+**Fusion rule** in `candidate_triage.md`: a plain AND over two
+already-categorical facts, never a new score — `evidence_strength: high`
+when *both* an ID-shaped route parameter with no visible auth-check
+(`attack_surface.md`) and `observed_id_pattern: sequential` (or a
+guessable `random`) for the matching family (`mutation_candidates.md`)
+hold for the same candidate. Absent either input — the common case,
+since recording the observation is optional — falls back to today's
+existing judgment, unchanged. A worked example (both the positive and
+the negative/fallback branch) is written directly into the skill file.
+
+**Verified, honestly scoped**: unlike Piece 12, this rule has no
+deterministic algorithm to extract and execute — it's pure textual
+fusion an agent applies by reading three skill files together, so there
+was nothing to unit-test the way Piece 12's `signal_class` logic could
+be. What *is* verifiable, and worth guarding: `tests/test_cross_source_correlation.py`
+(4 tests) confirms the wiring between the three files actually
+survives — `observed_id_pattern` is defined where it's recorded
+(`parameter_mutation_testing.md`), pointed to from where it's produced
+(`idor.md`), and the fusion rule plus both branches of the worked
+example are present in `candidate_triage.md` — a real regression guard
+against a future edit silently breaking the cross-reference, even
+though the fusion *logic* itself has no code to test. All three skill
+files load cleanly with balanced fences. Full suite re-run clean: 1283
+passed (up 4), 1 skipped, same pre-existing/unrelated `test_pricing.py`
+failure as every other piece in this track.
+
+**Committed** as its own commit.
+

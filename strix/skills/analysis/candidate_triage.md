@@ -56,6 +56,35 @@ front of you — never a new investigation just to fill in a label:
   it's real. A tainted source reaching a sink with no auth-check found
   in `attack_surface.md`'s window is `high`; a route that exists but
   matched no source/sink/auth pattern at all is `low`.
+
+  **Cross-source fusion, a plain AND over two already-categorical
+  facts, not a new score**: set `evidence_strength: high` whenever
+  *both* hold for the same candidate — an ID-shaped route parameter
+  with `"Auth-check keywords found in range: none"` in `attack_surface.md`
+  (the whitebox fact), **and** `observed_id_pattern: sequential` (or a
+  short/guessable `random`) on the matching family row in
+  `mutation_candidates.md` (the black-box fact — see `idor.md`'s
+  "UUID/Opaque ID Sources"). Neither source alone proves the object is
+  actually reachable cross-principal; together they mean a real,
+  observed ID an attacker could plausibly guess is sitting behind a
+  route with no visible guard — worth moving to the front of the queue.
+  Absent either input (most candidates, most of the time — recording
+  `observed_id_pattern` is optional and often nobody's looked yet),
+  `evidence_strength` falls back to today's judgment call, unchanged.
+
+  **Worked example.** `attack_surface.md` shows
+  `### Route: api/orders.php:40 -> handler get_invoice() at api/orders.php:12-38`
+  with `- Auth-check keywords found in range: none`. Recon's crawl
+  observed real invoice URLs `.../invoices/1042`, `.../invoices/1043`,
+  `.../invoices/1044` and recorded `observed_id_pattern: sequential` on
+  the matching `orders`/`invoices` family row in
+  `mutation_candidates.md`. Both hold → `evidence_strength: high` for
+  this candidate, mechanically, not by re-arguing the odds each time a
+  new agent picks it up. If recon had instead observed UUIDs with no
+  discernible pattern, `observed_id_pattern` would be `opaque` or
+  `unknown`, the AND fails, and `evidence_strength` reverts to whatever
+  the plain structural read (auth-check absent, evidence_strength
+  `medium` on that basis alone) would already give it.
 - **`test_cost`** — how expensive checking is. A single grep/read that
   confirms or rules out the candidate is `low`; a multi-step live
   exploitation needing multiple accounts, chained requests, or a fragile
@@ -145,7 +174,10 @@ once a candidate becomes a finding.
 - `custom/source_aware_sast.md` — `attack_surface.md` is the primary
   source of `evidence_strength` for whitebox candidates.
 - `analysis/parameter_mutation_testing.md` — `mutation_candidates.md`'s
-  family rows are one of the row sources this triages.
+  family rows are one of the row sources this triages, and the source of
+  `observed_id_pattern` for the cross-source fusion rule above.
+- `vulnerabilities/idor.md` — "UUID/Opaque ID Sources" is where
+  `observed_id_pattern` gets recorded in the first place.
 - `reconnaissance/trust_boundary_mapping.md` — `trust_boundaries.md`'s
   Test Pairs are another.
 - `coordination/source_aware_whitebox.md` — the entry-point-slice

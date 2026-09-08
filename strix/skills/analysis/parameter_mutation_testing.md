@@ -408,6 +408,17 @@ already established for everything else under `/workspace/recon/`.
   comparison type (see "Actor Replay (Differential Authorization)"), so
   the field logged here must match which kind of comparison the row is
   reporting.
+- **`observed_id_pattern`** (optional): `sequential` | `random` |
+  `opaque` | `unknown`, recorded by whichever agent — recon or a hunter
+  — first observes this family's actual ID values during
+  crawling/enumeration (not derived from source, and not a guess from
+  the parameter's *name* — a field called `id` can still be a random
+  UUID, and a field called `uuid` can still turn out sequential). This
+  closes a real gap: nothing in this codebase recorded a black-box
+  ID-shape observation anywhere before this field existed, so
+  `analysis/candidate_triage.md`'s cross-source fusion rule had nothing
+  to read. Leave unset when nobody has looked yet — `unknown` is for "I
+  checked and couldn't tell," a different state from "nobody's checked."
 - Any of `mass_assignment.md`/`broken_function_level_authorization.md`/
   `idor.md`'s testing agents read this file before generating their own
   family list, and update a family's row (not append a duplicate) when
