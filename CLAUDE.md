@@ -2723,3 +2723,73 @@ this track.
 
 **Committed** as its own commit.
 
+### Piece 11 — Hypothesis Priority Queue: implemented and committed
+
+Categorical (never numeric) triage rubric for which untested candidate
+to investigate next. Skill-only — no new tool, no new persisted state.
+
+**Confirmed the integration point rather than assuming**: `needs_follow_up`
+coverage entries are already-investigated-but-inconclusive (per
+`counterevidence.md`) — a revisit queue, not an unstarted backlog. The
+actual "candidates to investigate next" live in `attack_surface.md`'s
+per-route rows, `mutation_candidates.md`'s family rows, and
+`trust_boundaries.md`'s Test Pairs — three existing lists, not one. So
+this is a **reusable rubric**, not a fourth unified ledger, and confirmed
+the user's own hypothesis on where it plugs in: since each agent already
+triages its own entry-point slice privately
+(`source_aware_whitebox.md`'s Agent Delegation Guidance), this applies
+**internally, per agent, per slice** — no cross-agent sharing, no root
+gate, no new tool needed at all.
+
+**New file** `strix/skills/analysis/candidate_triage.md` — three
+categorical labels (`impact` / `evidence_strength` / `test_cost`, each
+high/medium/low) mapped through a fixed 27-row lookup table to P0-P3.
+The table was generated from a simple internal scheme (impact and
+evidence_strength score 2/1/0 for high/medium/low, cost scores 2/1/0 for
+low/medium/high since cheap is good, sum 0-6 maps to P0-P3) — shown in
+the file so every cell is auditable, but that arithmetic never reaches
+the model: an agent reads three labels off a candidate and looks up the
+bucket, nothing computed at runtime. Five cells get an explicit
+one-sentence justification in the file, including the least intuitive
+one: `low/low/low` lands at **P2, not P3** — a zero-cost check should
+never sit at the very bottom just because nobody expects much from it;
+clearing it costs nothing, so it doesn't compete with genuinely
+expensive low-value work for last place.
+
+**Non-negotiable, stated explicitly in the file**: this is a sort key on
+an agent's own worklist, never a filter or a gate — a P3 candidate
+that's a 30-second check right in front of the agent is always worth
+doing regardless of queue position.
+
+**Verified**: `tests/test_candidate_triage_table.py` (7 tests) — parses
+the **actual committed markdown table** from the skill file (not a
+hand-copied version) via regex, confirming all 27 impact×evidence×cost
+combinations are present with no duplicates, and that **every single
+row matches the documented generation formula** — a real regression
+guard against a future hand-edit silently breaking a cell. Also checks
+the 4 edge cases from the design conversation plus 2 more (best-case
+`high/high/low` → P0, worst-case `low/low/high` → P3), the
+`low/low/low` → P2 cell specifically, and that the non-negotiable
+"never a filter and never a gate" language survives in the file — this
+last check needed whitespace-normalization after the file's own
+~78-80-char soft-wrap style split the phrase across two lines in a first
+draft of the test, the exact same false-alarm shape already noted
+elsewhere in this project's history (§11) for a different file, not a
+bug in the skill text. Skill file loads cleanly and resolves via
+qualified name with no collisions (`analysis/*` is an internal category,
+correctly absent from the bare-name listing — confirmed, not assumed, by
+loading it qualified per the established precedent). Full suite re-run
+clean: 1264 passed (up 7), 1 skipped, same pre-existing/unrelated
+`test_pricing.py` failure as every other piece in this track.
+
+**Committed** as its own commit.
+
+**All three pieces from this follow-on batch (§25) are now implemented,
+tested, documented, and committed** — Piece 10's `discloses`/`requires`
+fields and `list_chain_candidates` tool, Piece 9's stagnation signal
+built on Piece 8's metrics, and Piece 11's static lookup table. No fake-
+precision score introduced anywhere: Piece 10's overlap check is exact
+string matching, Piece 9's threshold is a plain documented constant, and
+Piece 11's bucket is a fixed table lookup over three labels, never a
+number the model produces or reasons about.
+
