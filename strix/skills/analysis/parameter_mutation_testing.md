@@ -129,8 +129,9 @@ step:
 2. `status.changed` (and not the flaky-retry case) → `"status"`.
 3. else `same_key_set == false`, or any `type_changes`, or any non-zero
    non-pagination `array_length_deltas` entry → `"structural"`.
-4. else any `value_deltas[...].out_of_expected_range == true`, or
-   `size.beyond_noise` → `"value"`.
+4. else any `value_deltas[...].out_of_expected_range == true`,
+   `size.beyond_noise`, or any changed field (see "Security-Sensitive
+   Field Names" below) → `"value"`.
 5. else → `"none"`.
 
 `signal_class` never carries a security verdict. `"structural"` means "a
@@ -138,6 +139,63 @@ new field appeared" or "an array grew" — whether that's a mass-assignment
 win, an IDOR content leak, or a BFLA side-effect is the calling skill's
 reading, and `counterevidence.md` still gates whether a `signal_class` hit
 becomes a filed finding (see "Using a Diff Record" below).
+
+### Security-Sensitive Field Names
+
+A response can be identical in status and size while a single field's
+*value* silently changed — a same-length `owner_id` swap is the obvious
+case, and the generic rules above would read that as `"none"` unless it
+happens to also trip `size.beyond_noise` or a declared `bounded`/
+`reflects_mutation` expectation. Rule 4 closes that gap: independent of
+the generic checks, a changed field whose name matches this list also
+triggers `"value"` — a status-200-identical-size response with a changed
+`owner_id` is never `"none"`.
+
+Match case-insensitively against the **last path segment** of each
+changed field in `value_deltas` and `type_changes` (e.g.
+`value_deltas.meta.owner_id` checks `"owner_id"`, not the whole path,
+so an unrelated field named `meta` doesn't cause a false match on some
+other part of the path):
+
+```python
+_SECURITY_SENSITIVE_FIELD_PATTERNS = (
+    # ownership / tenancy
+    "owner_id", "owner", "user_id", "userid", "account_id",
+    "tenant_id", "org_id", "organization_id", "customer_id",
+    # privilege / access control
+    "role", "permission", "is_admin", "isadmin", "admin",
+    "capability", "access_level", "privilege", "scope",
+    # workflow / state
+    "status", "state", "approved", "is_active", "enabled", "locked", "verified",
+    # monetary / quantity
+    "price", "amount", "balance", "total", "quantity", "capacity", "discount", "credit", "limit",
+)
+```
+
+**Deliberately excludes** token/session/secret-shaped names (`token`,
+`session`, `api_key`, and similar) — those are naturally volatile
+per-response, and including them would reintroduce exactly the noise the
+existing header ignore-list (`Set-Cookie`, `X-Request-Id`, ...) already
+exists to filter out, on the body side this time.
+
+This check runs regardless of whether the field has a declared
+`expectations` entry — it does **not** ask whether the change was
+expected, only whether the *name* is security-sensitive. A `PATCH`
+endpoint whose entire legitimate purpose is reassigning `owner_id` will
+still get `signal_class: "value"` here even when the change is
+authorized and correct. That is fine, not a bug to route around:
+`signal_class` "never carries a security verdict" everywhere else in
+this file, and this is no different — a "value" hit is a lead the
+calling skill reads through its own lens and `counterevidence.md` still
+gates, exactly like every other tier. Suppressing this check based on a
+declared expectation would risk hiding the one case it exists to catch
+(an *unexpected* actor able to trigger the same field change) behind a
+different candidate's *expected* one.
+
+Extend this list per target when a domain-specific sensitive field name
+doesn't fit the generic set above (e.g. a healthcare target's
+`patient_id`, a fintech target's `ledger_balance`) — it's a plain list,
+not a closed taxonomy.
 
 These five rules are unchanged for every record in this file, including
 actor-replay ones (below) — but for an actor-replay comparison, reading

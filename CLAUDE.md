@@ -2793,3 +2793,75 @@ string matching, Piece 9's threshold is a plain documented constant, and
 Piece 11's bucket is a fixed table lookup over three labels, never a
 number the model produces or reasons about.
 
+## 26. FOLLOW-UP AUDIT AGAINST AN EXTERNAL LIST — 3 CHEAP PARTIAL GAPS
+    CLOSED (PIECES 12-14)
+
+A second external quality-improvement list arrived after §25 closed.
+Audited all 10 items against everything built in §21-§25 plus
+pre-existing `counterevidence.md`/"Chain Findings Before Finishing"
+before touching anything: 4/10 were already fully closed (hypothesis-
+driven testing → `counterevidence.md`'s Three Closure States;
+exploitability validation → the same file's closing bar; attack-chain
+reasoning → "Chain Findings Before Finishing" + Piece 10; the blanket
+reportability rule → `counterevidence.md` near-verbatim) — not rebuilt.
+5/10 were partial with one specific nameable gap each. 1/10 (a Semantic
+Dataflow Engine / CodeQL-class taint tracker) was confirmed genuinely
+new and large — this matches §9's own prior audit finding almost
+word-for-word ("No dedicated taint/dataflow engine... no CodeQL"),
+explicitly parked, not started.
+
+Of the 5 partial gaps, the user picked the 3 cheapest/highest-signal:
+Piece 12 (field weighting), Piece 13 (cross-source correlation), Piece
+14 (per-endpoint coverage grid). The other 2 partial gaps (Authorization
+Matrix as one visual grid rather than three linked sections; a
+dedicated adversarial verifier agent distinct from self-review) remain
+open, not rejected — just not picked this round.
+
+### Piece 12 — Security-Sensitive Field Weighting: implemented and committed
+
+Extends Piece 3's `signal_class` engine (`analysis/parameter_mutation_testing.md`)
+— skill-only, since (confirmed again, same as Piece 3's original build)
+Layer B has no production Python implementation anywhere; it's a spec
+an LLM agent follows at request-time. New `## Security-Sensitive Field
+Names` section: a 34-pattern keyword list (ownership/tenancy,
+privilege/access-control, workflow/state, monetary/quantity),
+deliberately **excluding** token/session/api_key-shaped names —
+including them would reintroduce exactly the noise the existing header
+ignore-list already fights, on the body side. Rule 4 (the `"value"`
+trigger) extended to also fire when any changed field's *last path
+segment* (not the whole dotted path, to avoid a false match through an
+unrelated parent key) matches the list, case-insensitive — independent
+of the generic status/size checks, so a status-200-identical-size
+response with a changed `owner_id` is never `"none"`.
+
+**A real inaccuracy caught in my own first draft, fixed before
+finalizing**: initially wrote that this list "never overrides a
+caller's explicit `expectations` entry" — checking the actual mechanism
+showed that's not true and not even desirable. The check runs on field
+*name* regardless of whether a `reflects_mutation`/`bounded` expectation
+was declared for it, and that's correct, not a gap to close: suppressing
+it based on a declared expectation would hide the exact case this exists
+to catch (an *unexpected* actor triggering the same field change) behind
+a different, legitimate candidate's *expected* one. Corrected the skill
+text to state the real behavior rather than an aspirational one.
+
+**Verified**: `tests/test_signal_class_field_weighting.py` (15 tests) —
+extracted the actual 34-pattern list from the committed skill file via
+regex (never hand-retyped) and implemented the documented 5-rule
+algorithm exactly, matching Piece 3's own verification precedent for
+this unimplemented-in-Python spec. Confirmed: the exact scenario from
+the design conversation (identical status/size, `owner_id` changed →
+`"value"`); a non-sensitive field change alone stays `"none"`; a status
+change still takes precedence over a sensitive-field hit (rule ordering
+preserved); case-insensitive matching; last-path-segment-only scoping
+(a sensitive-looking parent key with a non-sensitive leaf does not false
+-match); the token/session exclusion holds; a sensitive field inside
+`type_changes` is correctly subsumed by the pre-existing structural rule
+rather than double-triggering; and one representative keyword from each
+of the four categories actually fires. Skill file loads cleanly
+(balanced fences). Full suite re-run clean: 1279 passed (up 15), 1
+skipped, same pre-existing/unrelated `test_pricing.py` failure as every
+other piece in this track.
+
+**Committed** as its own commit.
+
