@@ -232,6 +232,18 @@ def _entry_is_about(entry: dict[str, Any], phrasings: list[list[str]]) -> bool:
     return any(all(term in haystack for term in terms) for terms in phrasings)
 
 
+def entry_matches_risk_class(entry: dict[str, Any], skill_name: str) -> bool:
+    """Public wrapper: does *entry*'s ``risk_area``/``surface`` text plausibly
+    concern the named vulnerability-class skill (e.g. ``"idor"``)?
+
+    Reuses the exact same phrasing table :func:`skill_coverage_gaps` uses
+    internally, so a caller checking one specific route's coverage (see
+    ``strix.tools.coverage.tools.check_route_coverage``) and the scan-wide
+    skill-gap check never diverge on what counts as "about" a given class.
+    """
+    return _entry_is_about(entry, _skill_phrasings(_skill_leaf(skill_name)))
+
+
 def skill_coverage_gaps(
     entries: list[dict[str, Any]], agents: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:

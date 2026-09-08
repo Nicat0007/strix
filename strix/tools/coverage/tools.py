@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import tempfile
 import threading
 import uuid
@@ -535,5 +536,149 @@ async def list_coverage(
     caller_agent_id, _ = _caller_identity(ctx)
     result = await asyncio.to_thread(
         _list_impl, outcome=outcome, surface=surface, caller_agent_id=caller_agent_id
+    )
+    return json.dumps(result, ensure_ascii=False, default=str)
+
+
+#: Piece 14. Not all 29 vulnerability-class skills — crossing every route
+#: against every class would be a combinatorial, mostly-empty grid nobody
+#: would read. This is the core set worth auto-checking before finish,
+#: matching the classes named in the design conversation; pass an explicit
+#: ``risk_classes`` list to widen or narrow it for a specific scan.
+_CORE_RISK_CLASSES: tuple[str, ...] = (
+    "idor",
+    "broken_function_level_authorization",
+    "mass_assignment",
+    "sql_injection",
+    "nosql_injection",
+    "ssti",
+    "rce",
+    "xss",
+    "business_logic",
+    "authentication_jwt",
+)
+
+#: Common path-parameter syntaxes across frameworks (Express ':id',
+#: Django/OpenAPI '{id}', some routers '<id>') collapsed to one token
+#: before comparing two route strings, so '/orders/{id}' and '/orders/:id'
+#: are recognized as the same route rather than producing a false
+#: "untested" from a syntax mismatch alone.
+_PATH_PARAM_PATTERN = re.compile(r"\{[^}]+\}|<[^>]+>|:[A-Za-z_][A-Za-z0-9_]*")
+
+
+def _normalize_route(route: str) -> str:
+    return _PATH_PARAM_PATTERN.sub("*", route.strip().lower())
+
+
+def _route_matches_entry(route: str, entry: dict[str, Any]) -> bool:
+    surface = _normalize_route(str(entry.get("surface", "")))
+    if not surface:
+        return False
+    normalized_route = _normalize_route(route)
+    return surface in normalized_route or normalized_route in surface
+
+
+def _do_check_route_coverage(
+    *, routes: list[str], risk_classes: list[str] | None
+) -> dict[str, Any]:
+    from strix.report.coverage import entry_matches_risk_class
+
+    classes = [c.strip().lower() for c in (risk_classes or _CORE_RISK_CLASSES) if c and c.strip()]
+    if not classes:
+        return {"success": False, "error": "risk_classes resolved to an empty list"}
+    clean_routes = [r.strip() for r in (routes or []) if r and r.strip()]
+    if not clean_routes:
+        return {
+            "success": False,
+            "error": "routes cannot be empty - pass the route/action identifiers you read "
+            "from attack_surface.md",
+        }
+
+    with _coverage_lock:
+        entries = list(_coverage_storage.values())
+
+    untested: list[dict[str, str]] = []
+    grid: list[dict[str, Any]] = []
+    for route in clean_routes:
+        for risk_class in classes:
+            matches = [
+                entry
+                for entry in entries
+                if _route_matches_entry(route, entry)
+                and entry_matches_risk_class(entry, risk_class)
+            ]
+            row: dict[str, Any] = {
+                "route": route,
+                "risk_class": risk_class,
+                "tested": bool(matches),
+            }
+            if matches:
+                row["outcome"] = matches[0].get("outcome", "")
+            else:
+                untested.append({"route": route, "risk_class": risk_class})
+            grid.append(row)
+
+    return {
+        "success": True,
+        "grid": grid,
+        "untested": untested,
+        "untested_count": len(untested),
+        "routes_considered": len(clean_routes),
+        "risk_classes_considered": classes,
+    }
+
+
+@function_tool(timeout=60)
+async def check_route_coverage(
+    ctx: RunContextWrapper,
+    routes: list[str],
+    risk_classes: list[str] | None = None,
+) -> str:
+    """Cross-reference route identifiers against the coverage ledger, per risk class.
+
+    **For the root agent, as part of "Reconcile Coverage Before
+    Finishing"** (`coordination/root_agent.md`). `coverage.json` lives in
+    this process, while `attack_surface.md` lives in the sandbox
+    filesystem — neither side can read the other directly, so read
+    `attack_surface.md` yourself first and pass in the route/action
+    identifiers you find there. Pass the identifier itself (a literal
+    path pattern, or — for WordPress-style registrations — the quoted
+    action name from the `Registration:` line), not the whole raw
+    `attack_surface.md` line; the full registration text rarely appears
+    verbatim inside a `record_coverage` surface string, so passing it
+    unmodified would produce nothing but false "untested" rows.
+
+    A `(route, risk_class)` cell counts as **tested** only when an
+    existing coverage entry's `surface` overlaps the route (path
+    parameters like `{id}`/`:id`/`<id>` are normalized to one token
+    first, so a syntax difference alone doesn't cause a false miss) *and*
+    its `risk_area` plausibly names that class (the same phrase-matching
+    `skill_coverage_gaps` already uses internally, so this never
+    disagrees with the scan-wide gap check on what counts as "about" a
+    class). This is biased toward the safe failure direction: a wording
+    mismatch produces a false "untested" — extra work, never a silently
+    skipped real gap.
+
+    Defaults to a **core set** of classes (`idor`,
+    `broken_function_level_authorization`, `mass_assignment`, the
+    injection family, `business_logic`, `authentication_jwt`) rather than
+    all vulnerability-class skills — crossing every route against all of
+    them would be a combinatorial, mostly-empty grid. Pass `risk_classes`
+    explicitly to widen or narrow it.
+
+    Read-only. Never files anything and never blocks `finish_scan` on its
+    own — queue a subagent for whichever untested cells you judge are
+    actually worth another look, the same dispatch pattern already used
+    for `needs_follow_up` rows in this same reconciliation step.
+
+    Args:
+        routes: Route/action identifiers read from `attack_surface.md`
+            (or an equivalent route inventory) — plain strings, not the
+            raw registration lines.
+        risk_classes: Optional list of `vulnerabilities/*.md` skill names
+            to check each route against. Defaults to the core set above.
+    """
+    result = await asyncio.to_thread(
+        _do_check_route_coverage, routes=routes, risk_classes=risk_classes
     )
     return json.dumps(result, ensure_ascii=False, default=str)

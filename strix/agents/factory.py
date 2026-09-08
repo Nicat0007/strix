@@ -27,7 +27,12 @@ from strix.tools.agents_graph.tools import (
     view_agent_graph,
     wait_for_agents,
 )
-from strix.tools.coverage.tools import list_coverage, record_coverage, update_coverage
+from strix.tools.coverage.tools import (
+    check_route_coverage,
+    list_coverage,
+    record_coverage,
+    update_coverage,
+)
 from strix.tools.file_context_cache.tools import query_file_summary, record_file_summary
 from strix.tools.finish.tool import finish_scan
 from strix.tools.load_skill.tool import load_skill
@@ -600,6 +605,7 @@ _BASE_TOOLS: tuple[Tool, ...] = (
     record_coverage,
     update_coverage,
     list_coverage,
+    check_route_coverage,
     query_negative_knowledge,
     record_negative_knowledge,
     query_file_summary,

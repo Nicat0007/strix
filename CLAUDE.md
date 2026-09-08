@@ -2923,3 +2923,90 @@ failure as every other piece in this track.
 
 **Committed** as its own commit.
 
+### Piece 14 — Per-Endpoint Coverage Grid: implemented and committed
+
+Extends the coverage engine's granularity from "was this vulnerability
+class examined *anywhere* in the scan" (`report/coverage.py`'s existing
+`skill_coverage_gaps()`) to "was it examined on *this specific route*" —
+real new Python, unlike Pieces 9-13.
+
+**Research finding, same shape as Piece 10's**: `coverage.json`
+lives in the host process; `attack_surface.md` lives in the sandbox
+filesystem. Neither side can read the other directly, so this couldn't
+be a pure `coverage.py` function — it needed the agent to read
+`attack_surface.md` itself and pass the route list in, mirroring Piece
+10's `list_chain_candidates` bridge exactly.
+
+**Second finding, which simplified the design**: `report/coverage.py`
+already had tested, deterministic machinery for the column-axis half of
+this problem — `_skill_phrasings()`/`_entry_is_about()` already match a
+ledger row's free-text `risk_area` against the canonical
+vulnerability-class vocabulary `skill_coverage_gaps()` uses. Rather than
+reach into those as private cross-module internals (the exact mistake
+Piece 8 already taught not to repeat with `ReportState._llm_usage`), added
+one small public wrapper, `entry_matches_risk_class()`, so a
+per-route check and the scan-wide gap check can never quietly diverge on
+what counts as "about" a given class.
+
+**Built**:
+- `report/coverage.py`'s `entry_matches_risk_class(entry, skill_name)` —
+  the public accessor.
+- `strix/tools/coverage/tools.py`'s new `check_route_coverage(routes,
+  risk_classes=None)` — for each `(route, risk_class)` pair, a cell is
+  "tested" only if an existing entry's `surface` overlaps the route
+  *and* its `risk_area` matches that class. Defaults to a **core set**
+  (`idor`, `broken_function_level_authorization`, `mass_assignment`, the
+  injection family, `business_logic`, `authentication_jwt`) rather than
+  all 29 vulnerability skills — crossing every route against every class
+  would be a combinatorial, mostly-empty grid nobody would read.
+  **Biased toward the safe failure direction, stated explicitly in the
+  docstring**: a wording mismatch produces a false "untested," never a
+  false "tested" — extra re-work, never a silently skipped real gap.
+- **A real matching gap caught and fixed before finalizing, not after**:
+  a first pass compared route strings as literal substrings, which would
+  have false-missed `/orders/{id}` (an `attack_surface.md`-style route)
+  against `/orders/:id` (an Express-style coverage `surface` an agent
+  typed) purely on placeholder-syntax difference. Added
+  `_normalize_route()` — collapses `{id}`/`:id`/`<id>`-shaped
+  placeholders to one token before comparing — so a framework-syntax
+  difference alone no longer produces a false miss.
+- Wired into `root_agent.md`'s existing "Reconcile Coverage Before
+  Finishing": one new paragraph explaining that `needs_follow_up` only
+  covers surfaces someone already looked at, never a route nobody ever
+  tested for a class at all, and instructing the root agent to call the
+  new tool and queue a subagent for untested cells worth a look — same
+  dispatch discipline as the existing `needs_follow_up` handling, not a
+  new automatic rule.
+
+**Verified**: `tests/test_route_coverage.py` (8 tests) — a route with no
+coverage at all is untested for every class; a matching surface+class is
+correctly read as tested with its outcome surfaced; **the case that
+actually matters** — a route covered for IDOR must not silently count as
+covered for SQL injection too — confirmed still untested for the
+uncovered class; the exact placeholder-syntax mismatch scenario
+(`{id}` vs `:id`) confirmed no longer false-misses, plus a direct unit
+check of `_normalize_route()`'s collapsing behavior across three
+syntaxes; the default core-class list is used when none is specified;
+empty `routes` is rejected; and bidirectional substring matching (a
+more specific coverage surface still matches a plainer route
+identifier). Caught and immediately fixed one contamination risk in my
+own first draft — an errant `hydrate_coverage_from_disk(Path("/tmp"))`
+call left over from editing, which would have written to the host's
+real `/tmp` — removed before the file was ever run. Related suites
+(`test_coverage_tool.py`, `test_report_coverage.py`,
+`test_finish_coverage_gate.py`, `test_state_coverage_artifact.py`,
+`test_skill_dir_extension.py`, 67 tests) confirmed unaffected. Full
+suite re-run clean: 1291 passed (up 8), 1 skipped, same
+pre-existing/unrelated `test_pricing.py` failure as every other piece in
+this track. (One earlier full-suite run was killed by the harness for
+low system memory, unrelated to this change — a parallel scan was
+running on the same host at the time — and re-ran clean on retry.)
+
+**Committed** as its own commit.
+
+**All three follow-up pieces (§26, Pieces 12-14) are now implemented,
+tested, documented, committed, and pushed.** No fake-precision score
+anywhere: Piece 12's field-name check is a plain keyword list, Piece
+13's fusion rule is a categorical AND, and Piece 14's grid cell is a
+plain boolean "tested"/"untested," never a number.
+

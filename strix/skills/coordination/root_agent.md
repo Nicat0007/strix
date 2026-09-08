@@ -112,6 +112,19 @@ No single hunter sees the whole target, so no single hunter can see the chain �
 
 Coverage entries are shared and mutable. Before `finish_scan`, list the `needs_follow_up` rows: each one is either work you still owe or a row somebody already resolved without updating. Assign the former to a subagent and have it call `update_coverage` on the existing entry rather than recording a second one — a stale open item sitting next to its own resolution is worse than either alone.
 
+`needs_follow_up` only surfaces surfaces someone already *looked at* and
+couldn't close — it says nothing about a route nobody ever tested for a
+given risk class at all. For a whitebox scan, close that second gap
+too: read `attack_surface.md`'s route list yourself, then call
+`check_route_coverage(routes=[...])` — it cross-references those routes
+against the coverage ledger per risk class (defaulting to the core set:
+IDOR, BFLA, mass assignment, the injection family, business logic,
+auth/JWT) and returns which `(route, risk_class)` cells were never
+covered by any entry. Queue a subagent for whichever untested cells you
+judge are actually worth another look before finishing — the same
+dispatch pattern as the `needs_follow_up` rows above, not a rule to
+apply mechanically to every single cell it returns.
+
 ## Agent Architecture
 
 Structure agents by function:
