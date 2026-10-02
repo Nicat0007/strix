@@ -3010,3 +3010,96 @@ anywhere: Piece 12's field-name check is a plain keyword list, Piece
 13's fusion rule is a categorical AND, and Piece 14's grid cell is a
 plain boolean "tested"/"untested," never a number.
 
+## 27. BLACK-BOX RECON PIPELINE — 4-LAYER NOISE GRADIENT (IMPLEMENTED,
+    COMMITTED, PUSHED)
+
+New track: upgrade `reconnaissance/asset_discovery.md` from a flat
+menu-of-techniques into an explicit, ordered, noise-graded 4-layer
+black-box recon pipeline, and wire `nuclei` into recon for the first time
+(it previously existed only as a standalone `tooling/nuclei.md` playbook,
+never referenced by the recon methodology). **Numbering note:** the user
+asked to log this as "§22", but §22 is already TRUST BOUNDARY MAPPER —
+logged here as §27 (next free) to avoid overwriting it.
+
+**Audit findings (before any change):** the premise "only httpx is used
+for recon" was inaccurate — `asset_discovery.md` already prescribed
+subfinder/httpx/naabu/crt.sh/katana/gospider/ffuf/dirsearch/arjun plus
+gau/waybackurls (dorking.md). The real gaps were structural: (1) no
+layering/noise ordering — an agent could fire loud ffuf/arjun before
+passive enumeration finished; (2) nuclei entirely absent from recon; (3)
+`entry_points.md` is white-box-only and was never clarified as
+inapplicable to black-box. Tool audit of `strix-sandbox:dev` confirmed all
+four layers' tools are already present (httpx/katana/subfinder/naabu/nmap/
+nuclei+templates/ffuf/dirsearch/arjun/gau/waybackurls/gospider/wafw00f);
+amass/feroxbuster/dalfox/hakrawler/wfuzz are missing but judged redundant
+with present equivalents — **no new tools, no Dockerfile change, no image
+rebuild.** User chose explicit tech→tag mapping (option A) over `nuclei
+-as`.
+
+**Four pieces, each committed separately:**
+
+- **Piece 1 — 4-layer noise gradient (commit 2df8bb4).** New "Layered
+  Execution Model (Noise Gradient)" section imposing a hard
+  passive→active→loud ordering with completion-flag gates
+  (`/workspace/recon/layer{1,2,3}_complete.flag` — do not begin layer N+1
+  until layer N's flag exists). Gate Rule 3 makes Layer 3 scoping a **hard
+  rule, not advice**: arjun/ffuf/dirsearch/content-discovery run ONLY on
+  hosts classified `api`/`app`/`admin`/`auth` in `assets.jsonl`, never the
+  full inventory; a point-of-use reminder added at the Content Discovery
+  step. Pure restructure.
+- **Piece 2 — structured `assets.jsonl` (commit a224656).** The
+  prerequisite for Layer 4 — without a structured tech field the mapping
+  has no input. httpx probe now writes `httpx_raw.jsonl` (+`-cdn`),
+  classification records a `class` field (the field Gate Rule 3 reads),
+  naabu/wafw00f feed `ports[]`/`waf`. New "Layer 2 Output — assets.jsonl
+  (canonical schema)" subsection: `{host,url,status_code,title,webserver,
+  tech[],cdn,waf,tls_info,ports[],class}`, with **per-field provenance
+  verified against the installed tools' real JSON** (not assumed — httpx
+  calls it `webserver` not `server`, `cdn_name`, `tls.{tls_version,cipher,
+  subject_cn,subject_an}`; naabu `{host,ip,port}`; wafw00f `{url,detected,
+  firewall}`), plus a stdlib normalization snippet joining the three raw
+  files. **Tested end-to-end, not assumed:** extracted the committed
+  snippet by string-marker and ran it against real httpx/naabu/wafw00f
+  output for wordpress.org + example.com inside the sandbox image — tech[]
+  populated correctly (`WordPress:7.2`/`Nginx`/`PHP`/`MySQL`), cdn and
+  ports[] joined correctly. (Commit-message first attempt truncated on a
+  backtick-in-heredoc; amended to the full message — the file change was
+  always correct.)
+- **Piece 3 — Layer 4 tech-matched nuclei (commit 127485a).** New "Layer 4
+  — Tech-Matched Nuclei Fingerprinting" section: nuclei scoped to the tech
+  stack in `assets.jsonl`, never the full ~10k set, at `critical,high`,
+  writing `/workspace/recon/nuclei.jsonl`; every hit routes through
+  `counterevidence.md` as a lead (detection-only templates fold back into
+  `tech[]`, never reported). Scan-mode gated standard/deep only; quick.md
+  skip-list updated (ad-hoc targeted nuclei still allowed). Testing
+  Methodology gains step 10. **Two §12-class "obvious API is secretly
+  inverted/stale" catches, both verified against the live image, both
+  documented in-skill so a future editor can't regress them:** (1)
+  nuclei's `http/cves/` is organized **by year, not product** — the
+  user's example `-t http/cves/wordpress/` path does not exist and matches
+  **0** templates; the real idiom is `-tags wordpress` (1709 templates),
+  so the mapping table maps products to `-tags`, not a cves path. (2)
+  nuclei treats `-t <path>` + `-tags` as an **AND filter**, not additive
+  (`-t http/exposed-panels/ -tags wordpress` → 1576 → **3** templates), so
+  the always-on category paths MUST run as a **separate second pass**, not
+  folded into the tagged pass, or they'd be silently filtered away.
+- **Piece 4 — entry_points.md clarification (commit 0a9ec82).** Prominent
+  block-quote note at the top of `asset_discovery.md`: `entry_points.md`
+  is NOT produced for black-box (white-box-only, built by
+  `custom/source_aware_sast.md`); the black-box equivalents are
+  `/workspace/recon/assets.jsonl`, `attack_queue.md`, and
+  `mutation_candidates.md`; black-box agents must not reference
+  `entry_points.md`.
+
+**Full suite after Piece 3** (the most structural change): 1291 passed, 1
+skipped, 1 failure — the same pre-existing/unrelated
+`test_pricing.py::test_resolves_common_bare_model_names` grok-4.5 litellm
+alias that fails identically on `main` and across every §21-§26 piece.
+Skill-only changes cannot affect it.
+
+**Not changed:** no Python, no Dockerfile, no new tools (amass/feroxbuster
+rejected as redundant). All changes take effect on the next `strix` run
+with no rebuild. The pipeline's flag-gates and `assets.jsonl` schema are
+conventions the agent follows from the skill text — there is no Python
+enforcement layer, matching this repo's skill-first philosophy (§1).
+
