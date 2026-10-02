@@ -3200,3 +3200,13 @@ the committed executor too. Full suite: 1308 passed, 1 skipped, 1 pre-existing
 `test_pricing` grok-4.5 alias failure. Single commit "Fix three Layer-4 nuclei
 integration bugs", pushed.
 
+### Known open gap (logged, fix deferred) — parallel executor rate budget
+
+(Requested as "§22"; logged here in the recon track, §22 is Trust Boundary
+Mapper.) Parallel nuclei executors do not share a rate budget: each
+`strix-recon-nuclei-run` enforces its own `-rl`/`-c` independently, so running
+N executors concurrently can multiply the actual request rate against the
+target by N. The executor runs its own groups/passes sequentially, but nothing
+coordinates a cumulative cap across *separate* executor processes. Fix deferred
+(would need a shared token-bucket/lock or a single serialized Layer-4 driver).
+
