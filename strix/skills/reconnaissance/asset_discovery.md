@@ -5,6 +5,8 @@ description: Passive asset and attack-surface discovery via certificate transpar
 
 # Asset Discovery
 
+> **Black-box artifact note:** For black-box targets, `entry_points.md` is **NOT** produced here — it is a white-box-only artifact built inside the sandbox by `custom/source_aware_sast.md`. The black-box equivalents are `/workspace/recon/assets.jsonl` (Layer 2 structured host inventory), `/workspace/recon/attack_queue.md` (the prioritized worklist), and `/workspace/recon/mutation_candidates.md`. **Do not reference `entry_points.md` in black-box agents** — point them at these three instead.
+
 Most engagements start from a small seed (one domain, one org name) but the real attack surface is far larger: forgotten hosts, staging/internal-named services, acquisitions, and infrastructure that never appears in a wordlist. Build a broad, deduplicated inventory using passive intelligence — certificate transparency, TLS certificate metadata, passive DNS, and ASN/IP data — then collapse it into a probed, classified attack surface. The aim is coverage and pivoting: every certificate, DNS record, and IP is a lead to more assets.
 
 Only use this skill when all subdomains and related assets of the target are in scope — broad discovery pulls in hosts far beyond the seed.
