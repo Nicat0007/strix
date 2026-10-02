@@ -3167,3 +3167,36 @@ grouping, identity normalization, run-state semantics, and result dedup are
 deterministic (scripts + tests). Committed locally in focused commits; not
 pushed.
 
+### §28 addendum — three Layer-4 nuclei integration bugs fixed
+
+(Logged here, not as a new "§22" as the request said — §22 is Trust Boundary
+Mapper; this is the recon track.) Follow-up pass before authenticated crawl,
+one commit, pushed:
+
+1. **Origin inventory tracked by origin, not host** (`strix-recon-normalize`):
+   `seen_hosts` → `seen_origins`. A responding `https://host:443` no longer
+   suppresses the `no_response` record for a refused `https://host:8443` on the
+   same host — nothing drops from `assets.jsonl` silently.
+2. **Bounded baseline** (`strix-recon-selectors` + new `strix-recon-nuclei-run`):
+   the whole-dir `http/exposures/`+`http/misconfiguration/` baseline is replaced
+   by an explicit subdirectory allowlist (`exposures/{configs,files,tokens}`,
+   `misconfiguration/{generic,proxy}`) and a hard `MAX_BASELINE_TEMPLATES = 50`
+   cap enforced in the new executor (sizes each path with `-tl`, greedily keeps
+   under the cap, truncates the rest with a logged reason). `-rl 50 -c 20 -bs 20
+   -ni` are now fixed on the actual subprocess argv, not advisory text.
+3. **Three-state selector validation** (`strix-recon-selectors` manifest +
+   `strix-recon-nuclei-run`): per-tag status `validated | unverified | invalid`.
+   Only `validated` tags execute. `unverified` (nuclei unavailable at
+   build time) are **re-validated by the executor at run time** — promoted and
+   run if nuclei now resolves them, else logged skipped ("nuclei unavailable at
+   validation time") and never placed in `-tags`. `invalid` never run.
+
+New fifth embedded script `strix-recon-nuclei-run` (the Layer-4 executor) owns
+the enforced flags, validated-only gating, re-validation, and baseline cap —
+the "advisory" budget language in Layer 4 was tightened accordingly.
+`tests/test_recon_pipeline.py` grew to 17 (origin-not-suppressed; baseline cap
+≤ 50 + `-rl`/`-c` in argv; and the three nuclei-availability paths), extracting
+the committed executor too. Full suite: 1308 passed, 1 skipped, 1 pre-existing
+`test_pricing` grok-4.5 alias failure. Single commit "Fix three Layer-4 nuclei
+integration bugs", pushed.
+

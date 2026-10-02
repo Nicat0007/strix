@@ -364,32 +364,24 @@ Tech→tag rules it applies: normalize each tech (lowercase, strip `:version`), 
 - **A bounded baseline, by category not severity.** Every in-scope origin (including `unknown_tech`) gets `http/exposures/` + `http/misconfiguration/` — useful low-noise exposure/misconfig leads that a `-s critical,high`-only filter would miss. Detection-only results stay recon enrichment (see below); severity is applied on top, it is not the selector.
 - **Empty selectors never broaden.** An origin with no validated product tags gets **only** its baseline paths — the runner must never emit a bare `-tags ` (which scans broadly). The manifest marks such groups `tags: []`.
 
-### Run per group, two passes, one shared budget
+### Run per group via `strix-recon-nuclei-run`
 
-`nuclei` treats `-t <path>` + `-tags` as an **AND filter**, not additive (`-t http/exposed-panels/ -tags wordpress` → 1576 templates become 3), so tags and paths must be *separate passes*. Per manifest group, run Pass A (`-tags`, only if the group has tags) then Pass B (`-t` paths), each to its **own per-run output file**:
-
-```bash
-# For each group g in nuclei_manifest.json, with layer4_targets.txt = g.origins
-# (already scoped to promoted/classified origins):
-
-# Pass A — product tags (SKIP entirely if g.tags is empty)
-nuclei -l layer4_targets.txt -tags "$GROUP_TAGS" \
-  -s critical,high -rl 50 -c 20 -bs 20 -timeout 10 -retries 1 -ni -silent \
-  -j -o "/workspace/recon/nuclei_run_${RUN_ID}_${GROUP}_tags.jsonl"
-
-# Pass B — selected category paths (bounded baseline + any conditional categories)
-nuclei -l layer4_targets.txt $GROUP_PATHS \
-  -rl 50 -c 20 -bs 20 -timeout 10 -retries 1 -ni -silent \
-  -j -o "/workspace/recon/nuclei_run_${RUN_ID}_${GROUP}_paths.jsonl"
-```
-
-Then dedup-merge all per-run files into the shared `nuclei.jsonl` with the `strix-recon-merge` script (keyed on template-id + matched location + matcher) — it reads **only** the files you pass and overwrites `nuclei.jsonl`, so it never appends to a stale result from an earlier run:
+`nuclei` treats `-t <path>` + `-tags` as an **AND filter**, not additive (`-t http/exposed-panels/ -tags wordpress` → 1576 templates become 3), so tags and paths must run as *separate passes*. Rather than hand-type that per group, run the `strix-recon-nuclei-run` executor (Pipeline Scripts, below) over `nuclei_manifest.json`:
 
 ```bash
+RUN_ID="$RUN_ID" python run_nuclei.py        # reads nuclei_manifest.json
 python merge_nuclei.py /workspace/recon/nuclei_run_${RUN_ID}_*.jsonl
 ```
 
-**Traffic budget (advisory, not enforced).** `-rl 50 -c 20` bounds a *single* nuclei process. Run groups and passes **sequentially**, not in parallel — launching N groups at once multiplies the effective rate/concurrency against the target N×. The `-rl`/`-c`/`-bs` numbers above are per-process caps the agent must choose to honor; nothing in the engine enforces a cumulative cap across passes. `-ni` disables OAST/interactsh unless callbacks are expected and permitted.
+The executor enforces, in code, what skill text can only advise:
+
+- **Validated selectors only.** Only a group's `tags_validated` reach the `-tags` pass. `tags_unverified` (nuclei was unavailable when the manifest was built) are **re-validated at execution time** — if nuclei now confirms templates they run, otherwise they are logged to `nuclei_skipped.json` ("nuclei unavailable at validation time") and never passed to the subprocess. `tags_invalid` never run.
+- **Hard rate/concurrency flags.** `-rl 50 -c 20 -bs 20 -timeout 10 -retries 1 -ni` are fixed on every `nuclei` argv the executor builds — enforced by the tool, not a number the agent is trusted to type. Groups/passes run sequentially (one process at a time), so the per-process caps are the effective caps.
+- **Baseline template cap.** The baseline path set is capped at `MAX_BASELINE_TEMPLATES` (50) resolved templates: the executor sizes each path with `-tl`, keeps paths greedily until the cap, and truncates the rest with a logged reason rather than silently running hundreds.
+
+It writes per-run `nuclei_run_${RUN_ID}_g*_*.jsonl` files plus `nuclei_commands.json` (every argv, for audit), `nuclei_skipped.json`, and `nuclei_layer4_summary.json`. `merge_nuclei.py` then dedup-merges those per-run files into the shared `nuclei.jsonl` (keyed on template-id + matched location + matcher) — it reads **only** the files you pass and overwrites `nuclei.jsonl`, so it never appends to a stale result from an earlier run.
+
+**Still advisory (not enforced):** that Layer 4 runs at all is gated by scan mode and the agent's adherence; the cumulative budget across *groups* is bounded only by running them sequentially (the executor does one group at a time, but nothing stops an agent from launching several executors in parallel). `-ni` disables OAST/interactsh unless callbacks are expected and permitted.
 
 ### Every hit is a lead, not a finding
 
@@ -401,7 +393,7 @@ A nuclei match is a **candidate**, never an auto-reported finding. Route every `
 
 ## Pipeline Scripts (run inside the sandbox)
 
-These four stdlib scripts implement the deterministic mechanics the layers above reference. Write each to `/workspace/recon/` and run it there (cwd = `/workspace/recon`). They are the single source of truth for normalization, selector grouping, run-state, and result merging — do not re-derive this logic ad hoc. `strix-recon-selectors` resolves tags via `$STRIX_NUCLEI_BIN` (defaults to `nuclei` on PATH).
+These five stdlib scripts implement the deterministic mechanics the layers above reference. Write each to `/workspace/recon/` and run it there (cwd = `/workspace/recon`). They are the single source of truth for normalization, selector grouping, run-state, Layer-4 execution, and result merging — do not re-derive this logic ad hoc. `strix-recon-selectors` and `strix-recon-nuclei-run` resolve templates via `$STRIX_NUCLEI_BIN` (defaults to `nuclei` on PATH).
 
 **`normalize_assets.py`** — raw httpx/naabu/wafw00f → per-origin `assets.jsonl` + host-level `host_ports.json`:
 
@@ -486,7 +478,7 @@ if hl.exists():
     requested = [l.strip() for l in hl.read_text().splitlines() if l.strip()]
 
 origins = {}
-seen_hosts = set()
+seen_origins = set()
 for r in load_jsonl("httpx_raw.jsonl"):
     req = r.get("input") or r.get("url")
     obs = r.get("url") or req
@@ -496,7 +488,7 @@ for r in load_jsonl("httpx_raw.jsonl"):
     if not key_o:           # destination is recorded as metadata, never promoted
         continue
     scheme, host, port, origin = key_o
-    seen_hosts.add(host)
+    seen_origins.add(origin)
     tls = r.get("tls") or {}
     failed = bool(r.get("failed"))
     tech = [t for t in (r.get("tech") or []) if t]
@@ -538,10 +530,12 @@ for r in load_jsonl("httpx_raw.jsonl"):
         winner["tech"] = union
         origins[origin] = winner
 
-# hosts requested but never probed -> explicit no_response (discovery failure)
+# origins requested but never probed -> explicit no_response (discovery failure).
+# Tracked by full origin, so https://host:443 responding does NOT suppress a
+# no_response record for https://host:8443 on the same host.
 for h in requested:
     o = split_origin(h)
-    if o and o[1] not in seen_hosts:
+    if o and o[3] not in seen_origins:
         origins.setdefault(o[3], {
             "origin": o[3], "scheme": o[0], "host": o[1], "port": o[2],
             "requested_origin": o[3], "observed_origin": None,
@@ -581,8 +575,17 @@ TECH_TAG_MAP = {
     "grafana": "grafana", "spring": "spring", "kubernetes": "kubernetes",
 }
 
-# bounded baseline categories every in-scope origin gets (low-noise leads)
-BASELINE_PATHS = ["http/exposures/", "http/misconfiguration/"]
+# bounded baseline: an explicit subdirectory allowlist, never whole parent dirs
+# (http/exposures/ + http/misconfiguration/ are hundreds of templates). The
+# runner (strix-recon-nuclei-run) additionally caps the resolved template count
+# at MAX_BASELINE_TEMPLATES.
+BASELINE_PATHS = [
+    "http/exposures/configs/",
+    "http/exposures/files/",
+    "http/exposures/tokens/",
+    "http/misconfiguration/generic/",
+    "http/misconfiguration/proxy/",
+]
 
 
 def norm_tech(t):
@@ -618,21 +621,28 @@ for rec in load_jsonl("assets.jsonl"):
     origin = rec["origin"]
     cls = (rec.get("class") or "").lower()
 
-    tags, reasons = set(), {}
+    # three-state classification: validated | unverified | invalid.
+    # Only `validated` tags are safe to execute. `unverified` (nuclei was
+    # unavailable at validation time) are NOT executed here; the runner
+    # re-validates them before use. `invalid` (nuclei confirmed no match) are
+    # dropped. A raw tech name with no table entry is treated the same way.
+    validated, unverified, invalid, reasons = [], [], [], {}
     for t in rec.get("tech") or []:
         n = norm_tech(t)
-        tag = TECH_TAG_MAP.get(n)
-        if not tag and n:
-            if tag_has_templates(n):              # unmapped: accept only if real
-                tag = n
+        tag = TECH_TAG_MAP.get(n) or n
         if not tag:
             continue
         v = tag_has_templates(tag)
-        if v is False:
-            reasons[f"tag:{tag}"] = "dropped: no template carries this tag"
-            continue
-        tags.add(tag)
-        reasons[f"tag:{tag}"] = "validated" if v else "unverified (nuclei unavailable)"
+        if v is True:
+            validated.append(tag)
+            reasons[f"tag:{tag}"] = "validated"
+        elif v is None:
+            unverified.append(tag)
+            reasons[f"tag:{tag}"] = "unverified (nuclei unavailable at validation time)"
+        else:
+            invalid.append(tag)
+            reasons[f"tag:{tag}"] = "invalid: no template carries this tag"
+    validated, unverified, invalid = sorted(set(validated)), sorted(set(unverified)), sorted(set(invalid))
 
     paths = list(BASELINE_PATHS)
     for p in BASELINE_PATHS:
@@ -645,10 +655,14 @@ for rec in load_jsonl("assets.jsonl"):
         paths.append("http/takeovers/")
         reasons["path:http/takeovers/"] = "takeover_candidate=true (DNS/provider evidence)"
 
-    sig = (tuple(sorted(tags)), tuple(sorted(set(paths))))
-    g = groups.setdefault(sig, {"origins": [], "tags": sorted(tags),
+    # group only when the executable selector picture is identical; `invalid`
+    # tags never execute, so they are excluded from the grouping signature.
+    sig = (tuple(validated), tuple(unverified), tuple(sorted(set(paths))))
+    g = groups.setdefault(sig, {"origins": [], "tags_validated": validated,
+                                "tags_unverified": unverified, "tags_invalid": invalid,
                                 "template_paths": sorted(set(paths)), "reasons": {}})
     g["origins"].append(origin)
+    g["tags_invalid"] = sorted(set(g["tags_invalid"]) | set(invalid))
     g["reasons"].update(reasons)
 
 manifest = {"groups": list(groups.values()),
@@ -658,7 +672,7 @@ Path("nuclei_manifest.json").write_text(json.dumps(manifest, indent=2))
 n_orig = sum(len(g["origins"]) for g in manifest["groups"])
 print(f"nuclei_manifest.json: {len(manifest['groups'])} group(s), {n_orig} origin(s)")
 for g in manifest["groups"]:
-    if not g["tags"]:
+    if not g["tags_validated"] and not g["tags_unverified"]:
         print(f"  group {g['origins']}: no product tags -> baseline paths only, "
               f"NO -tags pass (an empty -tags would scan broadly)")
 ```
@@ -755,6 +769,103 @@ with open("nuclei.jsonl", "w") as out:
     for r in merged:
         out.write(json.dumps(r) + "\n")
 print(f"nuclei.jsonl: {len(merged)} unique finding(s) from {len(sys.argv) - 1} input file(s)")
+```
+
+**`run_nuclei.py`** — execute Layer 4 per manifest group with enforced flags, validated-only selectors, and a hard baseline cap:
+
+```python
+# === strix-recon-nuclei-run ===
+# Execute Layer-4 nuclei per manifest group. Enforces three things the skill
+# text can only advise: (1) -rl/-c/-bs and -ni are hard flags on the actual
+# subprocess argv, (2) only VALIDATED selectors reach the -tags pass --
+# `unverified` tags are RE-VALIDATED here (nuclei may now be available) and run
+# only if they resolve, else logged skipped; `invalid` never run, (3) the
+# baseline path set is capped at MAX_BASELINE_TEMPLATES resolved templates,
+# truncating (with a logged reason) rather than silently running more.
+import json, os, subprocess
+from pathlib import Path
+
+NUCLEI_BIN = os.environ.get("STRIX_NUCLEI_BIN", "nuclei")
+RUN_ID = os.environ.get("RUN_ID", "run")
+MAX_BASELINE_TEMPLATES = 50
+# hard, enforced caps on every nuclei invocation (not advisory text)
+BASE_FLAGS = ["-rl", "50", "-c", "20", "-bs", "20", "-timeout", "10",
+              "-retries", "1", "-ni", "-silent", "-j"]
+
+commands, skipped, summary = [], [], []
+
+
+def tl_count(sel):
+    """Template count selected by `sel` (e.g. ['-t', path] or ['-tags', x]);
+    None when nuclei is unavailable."""
+    try:
+        out = subprocess.run([NUCLEI_BIN, *sel, "-tl"],
+                             capture_output=True, text=True, timeout=120, check=False)
+        return sum(1 for ln in out.stdout.splitlines() if ln.strip().endswith(".yaml"))
+    except (FileNotFoundError, subprocess.SubprocessError):
+        return None
+
+
+def run(sel, out_file):
+    cmd = [NUCLEI_BIN, "-l", "layer4_targets.txt", *sel, *BASE_FLAGS, "-o", out_file]
+    commands.append(cmd)
+    try:
+        subprocess.run(cmd, capture_output=True, text=True, timeout=1800, check=False)
+    except subprocess.SubprocessError:
+        pass
+
+
+manifest = json.loads(Path("nuclei_manifest.json").read_text())
+for i, g in enumerate(manifest["groups"]):
+    group = f"g{i}"
+    Path("layer4_targets.txt").write_text("\n".join(g["origins"]) + "\n")
+
+    # -tags pass: validated tags execute; unverified are re-validated now
+    tags = list(g.get("tags_validated", []))
+    for t in g.get("tags_unverified", []):
+        c = tl_count(["-tags", t])
+        if c is None:
+            skipped.append({"group": group, "tag": t,
+                            "reason": "nuclei unavailable at validation time"})
+        elif c > 0:
+            tags.append(t)
+        else:
+            skipped.append({"group": group, "tag": t, "reason": "invalid on re-validation"})
+    tags = sorted(set(tags))
+    if tags:
+        run(["-tags", ",".join(tags), "-s", "critical,high"],
+            f"nuclei_run_{RUN_ID}_{group}_tags.jsonl")
+
+    # -t baseline/category pass: hard MAX_BASELINE_TEMPLATES cap (truncate, warn)
+    kept, total = [], 0
+    for p in g.get("template_paths", []):
+        c = tl_count(["-t", p])
+        if c is None:
+            skipped.append({"group": group, "path": p,
+                            "reason": "nuclei unavailable at validation time"})
+            continue
+        if total + c > MAX_BASELINE_TEMPLATES:
+            skipped.append({"group": group, "path": p,
+                            "reason": f"baseline cap {MAX_BASELINE_TEMPLATES} reached "
+                                      f"(+{c} would exceed; have {total})"})
+            continue
+        kept.append(p)
+        total += c
+    if kept:
+        sel = []
+        for p in kept:
+            sel += ["-t", p]
+        run(sel, f"nuclei_run_{RUN_ID}_{group}_paths.jsonl")
+    summary.append({"group": group, "tags_run": tags,
+                    "baseline_paths_kept": kept, "baseline_total": total})
+
+Path("nuclei_commands.json").write_text(json.dumps(commands, indent=2))
+Path("nuclei_skipped.json").write_text(json.dumps(skipped, indent=2))
+Path("nuclei_layer4_summary.json").write_text(json.dumps(summary, indent=2))
+print(f"ran {len(commands)} nuclei pass(es); skipped {len(skipped)} selector(s)")
+if skipped:
+    print("WARNING: skipped selectors (see nuclei_skipped.json): "
+          + ", ".join(sorted({s['reason'] for s in skipped})))
 ```
 
 ## Testing Methodology

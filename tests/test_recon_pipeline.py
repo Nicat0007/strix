@@ -29,6 +29,7 @@ MARKERS = {
     "selectors": "# === strix-recon-selectors ===",
     "state": "# === strix-recon-state ===",
     "merge": "# === strix-recon-merge ===",
+    "nuclei_run": "# === strix-recon-nuclei-run ===",
 }
 
 
@@ -54,20 +55,30 @@ def _write_scripts(d: Path) -> None:
 
 
 def _mock_nuclei(d: Path) -> str:
-    """Return a shim path usable as STRIX_NUCLEI_BIN; emits fake template lines
-    for known product tags and nothing for unknown ones."""
+    """Return a shim path usable as STRIX_NUCLEI_BIN. In ``-tl`` listing mode it
+    emits fake ``.yaml`` lines: for ``-tags <known>`` two lines (validated),
+    for ``-tags <unknown>`` none (invalid), and for ``-t <path>`` a count from
+    STRIX_MOCK_TPL_PER_PATH (default 20). Without ``-tl`` (an actual scan) it
+    exits 0 writing nothing."""
     mock = d / "mock_nuclei.py"
     mock.write_text(
-        "import sys\n"
+        "import os, sys\n"
         "KNOWN={'wordpress','nginx','php','apache','laravel','drupal','joomla',"
         "'tomcat','jira','jenkins','gitlab','grafana','spring','kubernetes'}\n"
-        "tag=None\n"
         "a=sys.argv\n"
-        "for i,x in enumerate(a):\n"
-        "    if x=='-tags' and i+1<len(a): tag=a[i+1]\n"
-        "if tag in KNOWN:\n"
-        "    print(f'http/technologies/{tag}-detect.yaml')\n"
-        "    print(f'http/cves/2024/{tag}-x.yaml')\n",
+        "def val(f):\n"
+        "    return a[a.index(f)+1] if f in a and a.index(f)+1 < len(a) else None\n"
+        "if '-tl' in a:\n"
+        "    if '-tags' in a:\n"
+        "        tag=val('-tags')\n"
+        "        if tag in KNOWN:\n"
+        "            print(f'http/technologies/{tag}-detect.yaml')\n"
+        "            print(f'http/cves/2024/{tag}-x.yaml')\n"
+        "    elif '-t' in a:\n"
+        "        n=int(os.environ.get('STRIX_MOCK_TPL_PER_PATH','20'))\n"
+        "        for i in range(n): print(f'http/t/{i}.yaml')\n"
+        "    sys.exit(0)\n"
+        "sys.exit(0)\n",
         encoding="utf-8",
     )
     shim = d / "nuclei_shim.sh"
@@ -104,9 +115,22 @@ def _assets(d: Path) -> list[dict]:
     return _lines(d / "assets.jsonl")
 
 
-def _selectors(d: Path) -> dict:
-    _run(d, "selectors", nuclei=_mock_nuclei(d))
+def _selectors(d: Path, nuclei: str | None = None) -> dict:
+    _run(d, "selectors", nuclei=nuclei or _mock_nuclei(d))
     return json.loads((d / "nuclei_manifest.json").read_text())
+
+
+def _unavailable_nuclei(d: Path) -> str:
+    return str(d / "nonexistent_nuclei_bin")   # FileNotFoundError -> unverified/None
+
+
+def _run_nuclei(d: Path, nuclei: str) -> tuple[list, list, list]:
+    _run(d, "nuclei_run", nuclei=nuclei)
+    return (
+        json.loads((d / "nuclei_commands.json").read_text()),
+        json.loads((d / "nuclei_skipped.json").read_text()),
+        json.loads((d / "nuclei_layer4_summary.json").read_text()),
+    )
 
 
 @pytest.fixture()
@@ -192,6 +216,20 @@ def test_probe_state_no_response_vs_empty(recon_dir: Path) -> None:
     assert a["https://down.example.com:443"]["probe_state"] == "no_response"
 
 
+def test_no_response_port_not_suppressed_by_sibling_origin(recon_dir: Path) -> None:
+    # FIX 1: 443 responds 200; 8443 on the SAME host is refused (no httpx line).
+    # Tracking by origin (not host) must still emit the 8443 no_response record.
+    (recon_dir / "hosts.txt").write_text(
+        "https://dual.example.com\nhttps://dual.example.com:8443\n")
+    _wl(recon_dir / "httpx_raw.jsonl", [hx("https://dual.example.com", ["nginx"])])
+    _run(recon_dir, "normalize")
+    a = {r["origin"]: r for r in _assets(recon_dir)}
+    assert set(a) == {"https://dual.example.com:443", "https://dual.example.com:8443"}
+    assert a["https://dual.example.com:443"]["status_code"] == 200
+    assert a["https://dual.example.com:443"]["probe_state"] == "completed"
+    assert a["https://dual.example.com:8443"]["probe_state"] == "no_response"
+
+
 # --- selectors ----------------------------------------------------------------
 
 
@@ -203,10 +241,11 @@ def test_no_cross_origin_selector_leakage(recon_dir: Path) -> None:
     _run(recon_dir, "normalize")
     m = _selectors(recon_dir)
     for g in m["groups"]:
-        if "wordpress" in g["tags"]:
+        if "wordpress" in g["tags_validated"]:
             assert g["origins"] == ["https://shop.example.com:443"]
         if g["origins"] == ["https://api.example.com:443"]:
-            assert g["tags"] == []   # API origin never gets wordpress
+            assert g["tags_validated"] == []   # API origin never gets wordpress
+            assert g["tags_unverified"] == []
 
 
 def test_empty_tech_gets_bounded_baseline_no_tags(recon_dir: Path) -> None:
@@ -214,17 +253,21 @@ def test_empty_tech_gets_bounded_baseline_no_tags(recon_dir: Path) -> None:
     _run(recon_dir, "normalize")
     assert _assets(recon_dir)[0]["probe_state"] == "unknown_tech"
     g = _selectors(recon_dir)["groups"][0]
-    assert g["tags"] == []
-    assert "http/exposures/" in g["template_paths"]
-    assert "http/misconfiguration/" in g["template_paths"]
+    assert g["tags_validated"] == []
+    assert g["tags_unverified"] == []
+    # explicit subdirectory allowlist, not whole parent dirs
+    assert "http/exposures/configs/" in g["template_paths"]
+    assert "http/misconfiguration/generic/" in g["template_paths"]
+    assert "http/exposures/" not in g["template_paths"]
 
 
 def test_unresolved_tag_no_broad_scan(recon_dir: Path) -> None:
     _wl(recon_dir / "httpx_raw.jsonl", [hx("https://y.example.com", ["TotallyUnknownFramework"])])
     _run(recon_dir, "normalize")
     g = _selectors(recon_dir)["groups"][0]
-    assert g["tags"] == []            # unknown tag dropped, no -tags pass
-    assert g["template_paths"]        # baseline still present
+    assert g["tags_validated"] == []   # unknown tag -> invalid (nuclei available), no -tags
+    assert g["tags_unverified"] == []
+    assert g["template_paths"]         # baseline still present
 
 
 def test_default_logins_and_takeovers_conditional(recon_dir: Path) -> None:
@@ -275,3 +318,74 @@ def test_merge_dedups_and_ignores_stale(recon_dir: Path) -> None:
     _run(recon_dir, "merge", "run_g1.jsonl", "run_g2.jsonl")
     out = _lines(recon_dir / "nuclei.jsonl")
     assert sorted(x["template-id"] for x in out) == ["nginx-ver", "wp-login"]
+
+
+# --- Layer-4 executor: baseline cap + enforced flags (FIX 2) ------------------
+
+
+def _flat(cmds: list) -> list[str]:
+    return [tok for cmd in cmds for tok in cmd]
+
+
+def test_baseline_capped_and_flags_enforced(recon_dir: Path) -> None:
+    _wl(recon_dir / "httpx_raw.jsonl", [hx("https://x.example.com", [])])  # empty tech
+    _run(recon_dir, "normalize")
+    mock = _mock_nuclei(recon_dir)
+    _selectors(recon_dir, nuclei=mock)
+    # 5 baseline paths * 20 templates each = 100 > MAX(50) -> must truncate
+    env = dict(os.environ)
+    env["STRIX_NUCLEI_BIN"] = mock
+    env["STRIX_MOCK_TPL_PER_PATH"] = "20"
+    r = subprocess.run(
+        [sys.executable, str(recon_dir / "recon_nuclei_run.py")],
+        cwd=recon_dir, env=env, capture_output=True, text=True, check=False,
+    )
+    assert r.returncode == 0, r.stderr
+    cmds = json.loads((recon_dir / "nuclei_commands.json").read_text())
+    summary = json.loads((recon_dir / "nuclei_layer4_summary.json").read_text())
+    skipped = json.loads((recon_dir / "nuclei_skipped.json").read_text())
+    assert summary[0]["baseline_total"] <= 50            # hard cap honored
+    assert len(summary[0]["baseline_paths_kept"]) == 2    # 2*20=40, 3rd would exceed
+    assert any("reached" in s.get("reason", "") for s in skipped)  # truncation logged
+    flat = _flat(cmds)
+    assert "-rl" in flat and "-c" in flat                 # enforced on actual argv
+
+
+# --- Layer-4 executor: unverified selectors never execute (FIX 3) -------------
+
+
+def test_unverified_tag_skipped_when_nuclei_unavailable(recon_dir: Path) -> None:
+    _wl(recon_dir / "httpx_raw.jsonl", [hx("https://w.example.com", ["WordPress:6.5"])])
+    _run(recon_dir, "normalize")
+    bad = _unavailable_nuclei(recon_dir)
+    m = _selectors(recon_dir, nuclei=bad)      # nuclei unavailable at build time
+    g = m["groups"][0]
+    assert g["tags_unverified"] == ["wordpress"]
+    assert g["tags_validated"] == []
+    cmds, skipped, _ = _run_nuclei(recon_dir, bad)   # still unavailable at exec
+    assert not any("wordpress" in tok for tok in _flat(cmds))     # never executed
+    assert any(s.get("tag") == "wordpress"
+               and s["reason"] == "nuclei unavailable at validation time"
+               for s in skipped)
+
+
+def test_unverified_tag_revalidated_when_nuclei_returns(recon_dir: Path) -> None:
+    _wl(recon_dir / "httpx_raw.jsonl", [hx("https://w.example.com", ["WordPress:6.5"])])
+    _run(recon_dir, "normalize")
+    bad = _unavailable_nuclei(recon_dir)
+    m = _selectors(recon_dir, nuclei=bad)            # unverified at build
+    assert m["groups"][0]["tags_unverified"] == ["wordpress"]
+    cmds, _, _ = _run_nuclei(recon_dir, _mock_nuclei(recon_dir))  # available at exec
+    flat = _flat(cmds)
+    assert "-tags" in flat and any("wordpress" in tok for tok in flat)  # now executes
+
+
+def test_validated_tag_normal_path(recon_dir: Path) -> None:
+    _wl(recon_dir / "httpx_raw.jsonl", [hx("https://w.example.com", ["WordPress:6.5"])])
+    _run(recon_dir, "normalize")
+    mock = _mock_nuclei(recon_dir)
+    m = _selectors(recon_dir, nuclei=mock)           # available throughout
+    assert m["groups"][0]["tags_validated"] == ["wordpress"]
+    cmds, skipped, _ = _run_nuclei(recon_dir, mock)
+    assert any("wordpress" in tok for tok in _flat(cmds))
+    assert not any(s.get("tag") == "wordpress" for s in skipped)
