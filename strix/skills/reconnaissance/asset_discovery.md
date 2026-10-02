@@ -387,6 +387,72 @@ Within a tier, boost hosts with a newly-issued cert or CT diff (from the passive
 
 Every crawled endpoint, extracted JS route, and discovered parameter not actually exploited in this pass is a candidate, not a dead end. Record it with `record_coverage(outcome="needs_follow_up")` as an `open_proof_gap` (see `analysis/counterevidence.md`) instead of letting it silently drop when crawl output is large. A big inventory with no follow-up trail is exactly how real endpoints get missed.
 
+## Layer 4 — Tech-Matched Nuclei Fingerprinting
+
+The final layer runs `nuclei`, but **only the template subset matching the tech stack Layer 2 detected** — never the full ~10k-template firehose. It reads `assets.jsonl`'s `tech[]` field (the reason Layer 2 captures it), maps each detected technology to nuclei template selectors, and scans at `critical,high` severity.
+
+**Scan-mode gate:** run Layer 4 in `standard` and `deep` modes only. **Skip it entirely in `quick` mode** (see `scan_modes/quick.md`) — it is the loudest, slowest layer.
+
+### Tech → nuclei selector mapping
+
+Build the selector set from the distinct `tech[]` values across `assets.jsonl` (strip any `:version` suffix, lowercase). Products map to a **`-tags`** value, not a `-t http/cves/<product>/` path: nuclei organizes `http/cves/` **by year, not by product**, so `http/cves/wordpress/` does not exist and would silently match nothing. `-tags wordpress` is what actually spans every CVE year dir plus that product's `vulnerabilities`/`technologies`/`misconfiguration` templates (verified against the installed templates: 1709 templates for the tag vs. 0 for the non-existent path).
+
+| httpx `tech` value (version-stripped, lowercased) | nuclei selector |
+|---|---|
+| `wordpress` | `-tags wordpress` |
+| `drupal` | `-tags drupal` |
+| `joomla` | `-tags joomla` |
+| `laravel` | `-tags laravel` |
+| `nginx` | `-tags nginx` |
+| `apache` / `apache httpd` | `-tags apache` |
+| `tomcat` | `-tags tomcat` |
+| `php` | `-tags php` |
+| `jira` | `-tags jira` |
+| `jenkins` | `-tags jenkins` |
+| `gitlab` | `-tags gitlab` |
+| `grafana` | `-tags grafana` |
+| `spring` | `-tags spring` |
+| `kubernetes` | `-tags kubernetes` |
+
+For a detected tech not in this table, try its lowercased, version-stripped name as a tag and **keep it only if it resolves to a non-empty set** — `nuclei -tags <name> -tl` returning zero means no template carries that tag, so drop it rather than pass a dead selector. Collect every surviving tag into one comma-separated `-tags` list for Pass A.
+
+### Always-on categories (every host, regardless of tech)
+
+Independent of the tech stack, always run these category paths — exposure/misconfig classes that are not product-specific:
+
+`-t http/exposed-panels/ -t http/default-logins/ -t http/takeovers/ -t http/misconfiguration/`
+
+### Run as two passes (do not combine `-t` with `-tags` in one run)
+
+`nuclei` treats `-t <path>` + `-tags` as an **AND filter**, not additive: `-t http/exposed-panels/ -tags wordpress` selects only the handful of wordpress-tagged templates *inside* exposed-panels (verified: 1576 → 3), silently dropping the rest. So run two separate passes appending to the same output file — never fold the always-on `-t` paths into the tagged Pass A:
+
+```bash
+# layer4_targets.txt = the promoted Layer-2 live URLs (classified api/app/admin/auth),
+# not the full inventory — same scope as Layer 3.
+
+# Pass A — product templates by tag (spans cves-by-year + vulns + misconfig per product)
+nuclei -l layer4_targets.txt -tags wordpress,nginx,php \
+  -s critical,high -rl 50 -c 20 -bs 20 -timeout 10 -retries 1 -ni -silent \
+  -j -o /workspace/recon/nuclei.jsonl
+
+# Pass B — always-on categories by path (no -tags, so not AND-filtered away)
+nuclei -l layer4_targets.txt \
+  -t http/exposed-panels/ -t http/default-logins/ -t http/takeovers/ -t http/misconfiguration/ \
+  -s critical,high -rl 50 -c 20 -bs 20 -timeout 10 -retries 1 -ni -silent \
+  -j -o /workspace/recon/nuclei_alwayson.jsonl
+cat /workspace/recon/nuclei_alwayson.jsonl >> /workspace/recon/nuclei.jsonl
+```
+
+`-ni` disables OAST/interactsh unless outbound callbacks are expected and allowed; `-rl 50 -c 20` keeps throughput bounded. The `-tags` list in Pass A is the comma-separated set built from the mapping table above — replace the `wordpress,nginx,php` example with whatever `assets.jsonl` actually detected.
+
+### Every hit is a lead, not a finding
+
+A nuclei match is a **candidate**, never an auto-reported finding. Route every `nuclei.jsonl` entry through `analysis/counterevidence.md`'s closure discipline before it becomes anything more:
+
+- Re-fetch and confirm the match is live and reproducible right now — templates carry false positives, and a matcher can fire on an error page, a honeypot, or a WAF block page.
+- A detection-only template (`http/technologies/*`, a version banner) is recon enrichment, not a vulnerability — fold it back into `assets.jsonl`'s `tech[]`, do not report it.
+- A `critical`/`high` template that genuinely fires becomes a candidate for the matching `vulnerabilities/*` skill, carried with the same `record_coverage` / `open_proof_gap` discipline as every other recon lead. The template firing is the start of verification, not the end.
+
 ## Testing Methodology
 
 1. **Seed** - domains, org/legal names, known IPs, email domains, code-host org
@@ -398,6 +464,7 @@ Every crawled endpoint, extracted JS route, and discovered parameter not actuall
 7. **Active TLS pivot** - `httpx -tls-grab` on live IPs/ports to grab SANs missing from public CT
 8. **Consolidate & probe** - dedupe, `httpx` probe, classify, and route to specialists
 9. **Application-layer recon** - crawl and extract JS, probe known paths/specs, content-discover, mine parameters, then rank into an attack queue (see Application-Layer Recon)
+10. **Tech-matched vuln fingerprinting** - `nuclei` scoped to the tech stack in `assets.jsonl`, two passes, every hit a lead (see Layer 4 — Tech-Matched Nuclei Fingerprinting; `standard`/`deep` modes only)
 
 ## Validation
 

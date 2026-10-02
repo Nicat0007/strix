@@ -45,6 +45,7 @@ Skip for quick scans:
 - Exhaustive subdomain enumeration
 - Full directory bruteforcing
 - Deep JS extraction and secondary crawlers (`-jsl`, `gospider`) — one fast crawl pass is enough
+- The Layer 4 tech-matched `nuclei` recon pass (`reconnaissance/asset_discovery.md`) — skip the automated two-pass sweep; an ad-hoc `nuclei -s critical,high` against a single already-confirmed lead is still fine
 - Low-severity information disclosure
 - Theoretical issues without working PoC
 
