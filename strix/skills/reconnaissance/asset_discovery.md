@@ -124,15 +124,89 @@ For ASN-owned ranges, sweep IPs directly with `naabu`/`httpx` and read served ce
 ## Consolidation & Probing
 
 1. **Dedupe** names and IPs into one inventory; record source(s) per asset for confidence.
-2. **Live probe** with `httpx`, capturing status/title/tech/server and cert SANs in one pass — each grabbed SAN feeds back as a new seed:
-   `httpx -l hosts.txt -sc -title -server -td -tls-grab -json -o assets.jsonl`
-3. **Classify** assets by function from title/tech/path signals: app, API, marketing, auth, CI/CD, observability, storage, admin, VCS, mail. Cluster by role, not by a specific product.
-4. **Port sweep** interesting hosts with `naabu` for non-HTTP services (DBs, caches, brokers, mgmt ports).
+2. **Live probe** with `httpx`, capturing status/title/tech/server, CDN, and cert SANs in one pass — each grabbed SAN feeds back as a new seed. Write the raw probe to `httpx_raw.jsonl`; it is normalized into the canonical `assets.jsonl` (schema below):
+   `httpx -l hosts.txt -sc -title -server -td -tls-grab -cdn -json -o httpx_raw.jsonl`
+   The `-td` (tech-detect) field is **Layer 4's only input** — if `tech` comes back empty, Layer 4's template mapping has nothing to key on, so confirm it populated before writing `layer2_complete.flag`.
+3. **Classify** assets by function from title/tech/path signals and record the result in each `assets.jsonl` record's `class` field — one of `api`, `app`, `admin`, `auth`, `marketing`, `cdn`, `storage`, `observability`, `other`. Cluster by role, not by a specific product. **Gate Rule 3 reads this field** to decide which hosts Layer 3 may touch.
+4. **Port sweep** hosts with `naabu --top-ports 1000` for non-HTTP services (DBs, caches, brokers, mgmt ports): `naabu -list hosts.txt -top-ports 1000 -json -silent -o naabu.jsonl`. Confirm service versions with `nmap -sV` only on the hosts/ports naabu flags open. Optionally fingerprint WAFs with `wafw00f -i hosts.txt -f json -o wafw00f.json`. Both feed the `ports[]` and `waf` fields of `assets.jsonl` below.
 5. **Prioritize** by exposure and value, then hand each finding to the right specialist skill:
    - Exposed dashboards / debug / observability / metadata leaks → `information_disclosure`
    - Login/admin panels with default or weak creds → `weak_password_detection`
    - Dangling DNS / unclaimed provider resources → `subdomain_takeover`
    - Cloud consoles/metadata surfaces → `aws` / `gcp` / `kubernetes`
+
+### Layer 2 Output — `assets.jsonl` (canonical schema)
+
+Normalize the raw `httpx`/`naabu`/`wafw00f` outputs into **one record per host** — this is the single artifact Layer 3 (Gate Rule 3) and Layer 4 (tech mapping) read. Field names are normalized from each tool's native JSON (verified against the installed tool versions):
+
+```json
+{
+  "host": "shop.example.com",
+  "url": "https://shop.example.com",
+  "status_code": 200,
+  "title": "Example Shop",
+  "webserver": "nginx",
+  "tech": ["Nginx", "PHP", "WordPress:6.5", "MySQL"],
+  "cdn": "cloudflare",
+  "waf": "Cloudflare",
+  "tls_info": {"version": "tls13", "cipher": "TLS_AES_128_GCM_SHA256", "subject_cn": "shop.example.com", "sans": ["*.example.com", "example.com"]},
+  "ports": [80, 443, 8443],
+  "class": "app"
+}
+```
+
+- `tech[]` ← httpx `tech` (needs `-td`). `cdn` ← httpx `cdn_name` (null when `cdn` is false). `tls_info` ← httpx `tls.{tls_version,cipher,subject_cn,subject_an}`. `status_code`/`title`/`webserver` ← the same-named httpx fields (note httpx calls it `webserver`, not `server`).
+- `ports[]` ← distinct `port` values from naabu's `{"host","ip","port"}` lines, joined on `host`.
+- `waf` ← wafw00f's `firewall` when `detected` is true, joined on host, else null. (httpx's `cdn_type: "waf"` is a weaker secondary signal.)
+- `class` ← populated by the classification step (3) above, not by any tool — the field Gate Rule 3 keys on.
+
+Ready-to-run normalization (reads the three raw files, writes `assets.jsonl`):
+
+```python
+import json, collections
+from pathlib import Path
+
+def load_jsonl(p):
+    f = Path(p)
+    return [json.loads(l) for l in f.read_text().splitlines() if l.strip()] if f.exists() else []
+
+ports = collections.defaultdict(set)
+for r in load_jsonl("naabu.jsonl"):
+    if r.get("host") and r.get("port"):
+        ports[r["host"]].add(int(r["port"]))
+
+waf = {}
+wf = Path("wafw00f.json")
+if wf.exists():
+    for r in json.loads(wf.read_text() or "[]"):
+        host = r.get("url", "").split("://")[-1].split("/")[0]
+        if r.get("detected"):
+            waf[host] = r.get("firewall")
+
+with open("assets.jsonl", "w") as out:
+    for r in load_jsonl("httpx_raw.jsonl"):
+        host = r.get("host") or r.get("input", "").split("://")[-1].split("/")[0]
+        tls = r.get("tls") or {}
+        rec = {
+            "host": host,
+            "url": r.get("url"),
+            "status_code": r.get("status_code"),
+            "title": r.get("title"),
+            "webserver": r.get("webserver"),
+            "tech": r.get("tech") or [],
+            "cdn": r.get("cdn_name"),
+            "waf": waf.get(host),
+            "tls_info": {
+                "version": tls.get("tls_version"),
+                "cipher": tls.get("cipher"),
+                "subject_cn": tls.get("subject_cn"),
+                "sans": tls.get("subject_an") or [],
+            } if tls else None,
+            "ports": sorted(ports.get(host, [])),
+            "class": None,  # filled by the classification step (3)
+        }
+        out.write(json.dumps(rec) + "\n")
+```
 
 ## Application-Layer Recon
 
