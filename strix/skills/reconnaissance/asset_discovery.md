@@ -17,29 +17,27 @@ Before or alongside the pipeline below, also run `dorking` — it needs only the
 
 ## Layered Execution Model (Noise Gradient)
 
-Run recon as four ordered layers, quietest first. This is a **hard ordering rule, not advice**: each layer's output gates the next, so a loud step never fires before the passive surface is fully built. Write a completion flag at the end of each layer and **do not begin layer N+1 until layer N's flag exists**:
+Run recon as four ordered layers, quietest first, so a loud step never fires before the passive surface is built. **This ordering is a skill-first convention the agent follows by reading these instructions — it is not runtime-enforced.** Nothing in the engine blocks a tool call if the order is ignored; the gate checks below, and the run-state file they read, are only as reliable as the agent's adherence. Treat them as a checklist you are responsible for honoring, not a sandbox that enforces them.
 
-- `/workspace/recon/layer1_complete.flag`
-- `/workspace/recon/layer2_complete.flag`
-- `/workspace/recon/layer3_complete.flag`
+Stage state lives in `/workspace/recon/recon_state.json`, written/read by the `strix-recon-state` script (see Pipeline Scripts, below). It is **run-specific**: every entry is tagged with the current `run_id` and a `scope_id` (a hash of the sorted in-scope seeds), and a state file left by any earlier run or a different scope reads back as `pending` — previous-run state never authorizes current-run work. Each stage is one of `pending | partial | completed | failed | skipped`. Export `RUN_ID` (the scan's run name) and `SCOPE_ID` (`printf '%s\n' <sorted-seeds> | sha256sum`) once at the start so every state call shares them.
 
-(Layer 4 writes `/workspace/recon/nuclei.jsonl`; no flag needed after the last layer.)
-
-| Layer | What runs | Target traffic | Where it's documented |
+| Layer | What runs | Target traffic | Documented in |
 |---|---|---|---|
-| **1 — Passive / OSINT** | CT (crt.sh), `subfinder -all`, passive DNS, ASN/IP mapping, `gau`/`waybackurls`, GitHub/Google dorking | **Zero** to the target | High-Value Sources, Key/Advanced Techniques, `dorking` |
-| **2 — Active light** | `httpx` live-probe + `-td` tech fingerprint + `-tls-grab`, classification into `assets.jsonl`, `naabu`/`nmap --top-ports 1000`, `katana` crawl + bounded headless XHR | Low (looks like a browser/crawler) | Consolidation & Probing, Application-Layer Recon step 1 |
-| **3 — Param / endpoint discovery** | `arjun`, `ffuf`/`dirsearch` content discovery, known-path probing | **High** (obvious non-human bruteforce) | Application-Layer Recon steps 2–4 |
-| **4 — Vuln fingerprinting** | `nuclei`, templates scoped to the tech stack detected in Layer 2 | Moderate, controllable | Layer 4 — Tech-Matched Nuclei Fingerprinting (below) |
+| **1 — Passive / OSINT** | CT (crt.sh), `subfinder -all`, passive DNS, ASN/IP, `gau`/`waybackurls`, dorking | **Zero** to target | High-Value Sources, `dorking` |
+| **2 — Active light** | `httpx` probe+`-td`+`-tls-grab` → per-origin `assets.jsonl`; `naabu --top-ports 1000` → `host_ports.json`; `katana` crawl + bounded headless XHR | Low (browser/crawler-like) | Consolidation & Probing |
+| **3 — Param / endpoint discovery** | `arjun`, `ffuf`/`dirsearch` content discovery, known-path probing | **High** (obvious bruteforce) | Application-Layer Recon steps 2–4 |
+| **4 — Vuln fingerprinting** | `nuclei`, a **per-origin** selector manifest (never one tag list across every origin) | Moderate, bounded | Layer 4 (below) |
 
-### Gate Rules (hard, not advisory)
+### Ordering conventions (agent-honored, not enforced)
 
-1. **Layer 1 before Layer 2.** Complete passive enumeration — CT + `subfinder` + historical URLs written under `/workspace/recon/` — then write `layer1_complete.flag` before any active probe touches the target. The deduped passive inventory is Layer 2's input.
-2. **Layer 2 before Layer 3.** Live-probe, fingerprint, and classify every host into `assets.jsonl` (see the Layer 2 output schema in Consolidation & Probing), then write `layer2_complete.flag`, before any directory/parameter bruteforce.
-3. **Layer 3 only on promoted hosts.** Run `arjun`, `ffuf`, `dirsearch`, and content discovery **only** against hosts whose `assets.jsonl` classification is `api`, `app`, `admin`, or `auth`. **Never run Layer 3 against the full inventory** — marketing/CDN/static hosts are excluded by rule, not by judgment. A host outside those classes gets Layer 3 only if a specific Layer 1/2 lead (a historical parameterized URL, a JS-extracted route) points at it, and then only at that lead, not a blind sweep.
-4. **Layer 4 reads Layer 2's tech field.** The nuclei template selection is driven by `assets.jsonl`'s `tech[]` field, so Layer 4 cannot run before Layer 2 populates it, and is additionally gated by scan mode (see Layer 4).
+Before starting a layer, check the prior stage: `strix-recon-state get "$RUN_ID" "$SCOPE_ID" <stage>` — proceed only if it reads `completed` or `skipped`. Set state when you finish (`completed`), finish partially (`partial`), fail (`failed`), or deliberately skip (`skipped`).
 
-Flags are completion markers for ordering only — the real artifacts other agents consume are `subs.jsonl` / `assets.jsonl` / `attack_queue.md` / `nuclei.jsonl`, per the reuse convention in `coordination/root_agent.md`.
+1. **Layer 1 → 2.** Finish passive enumeration (CT + `subfinder` + historical URLs under `/workspace/recon/`), set `layer1=completed`, before any active probe. If a passive source is unreachable, record it and continue on authorized seeds — the stage is `completed`/`partial`, never a silent block.
+2. **Layer 2 → 3.** Probe, fingerprint, classify into `assets.jsonl`, set `layer2=completed`, before any directory/parameter bruteforce. An empty or unknown tech fingerprint does **not** block this — it is a recorded `probe_state`, not a failure (see Layer 2).
+3. **Layer 3 scope.** Run `arjun`/`ffuf`/`dirsearch`/content discovery only against origins whose `assets.jsonl` `class` is `api`/`app`/`admin`/`auth`, plus specific Layer 1/2 leads — not the full inventory. Marketing/CDN/static origins are excluded.
+4. **Layer 4.** Reads `assets.jsonl`, emits a per-origin selector manifest; gated by scan mode (standard/deep only). A `skipped` Layer 4 (quick mode) satisfies the ordering check and must not block anything downstream.
+
+A `skipped` optional stage satisfies the ordering check and never deadlocks a later stage; `failed`/`partial`/`pending` do not — redo or explicitly skip. The real artifacts other agents consume are `subs.jsonl` / `assets.jsonl` / `host_ports.json` / `attack_queue.md` / `nuclei.jsonl`, per the reuse convention in `coordination/root_agent.md`.
 
 ## Attack Surface
 
@@ -128,7 +126,7 @@ For ASN-owned ranges, sweep IPs directly with `naabu`/`httpx` and read served ce
 1. **Dedupe** names and IPs into one inventory; record source(s) per asset for confidence.
 2. **Live probe** with `httpx`, capturing status/title/tech/server, CDN, and cert SANs in one pass — each grabbed SAN feeds back as a new seed. Write the raw probe to `httpx_raw.jsonl`; it is normalized into the canonical `assets.jsonl` (schema below):
    `httpx -l hosts.txt -sc -title -server -td -tls-grab -cdn -json -o httpx_raw.jsonl`
-   The `-td` (tech-detect) field is **Layer 4's only input** — if `tech` comes back empty, Layer 4's template mapping has nothing to key on, so confirm it populated before writing `layer2_complete.flag`.
+   The `-td` (tech-detect) field feeds Layer 4's template mapping. An empty `tech` is **fine and does not block Layer 2** — the normalizer records that origin's `probe_state` as `unknown_tech`, and Layer 4 falls back to a bounded baseline for it (see Layer 4).
 3. **Classify** assets by function from title/tech/path signals and record the result in each `assets.jsonl` record's `class` field — one of `api`, `app`, `admin`, `auth`, `marketing`, `cdn`, `storage`, `observability`, `other`. Cluster by role, not by a specific product. **Gate Rule 3 reads this field** to decide which hosts Layer 3 may touch.
 4. **Port sweep** hosts with `naabu --top-ports 1000` for non-HTTP services (DBs, caches, brokers, mgmt ports): `naabu -list hosts.txt -top-ports 1000 -json -silent -o naabu.jsonl`. Confirm service versions with `nmap -sV` only on the hosts/ports naabu flags open. Optionally fingerprint WAFs with `wafw00f -i hosts.txt -f json -o wafw00f.json`. Both feed the `ports[]` and `waf` fields of `assets.jsonl` below.
 5. **Prioritize** by exposure and value, then hand each finding to the right specialist skill:
@@ -137,78 +135,39 @@ For ASN-owned ranges, sweep IPs directly with `naabu`/`httpx` and read served ce
    - Dangling DNS / unclaimed provider resources → `subdomain_takeover`
    - Cloud consoles/metadata surfaces → `aws` / `gcp` / `kubernetes`
 
-### Layer 2 Output — `assets.jsonl` (canonical schema)
+### Layer 2 Output — `assets.jsonl` (one record per *origin*)
 
-Normalize the raw `httpx`/`naabu`/`wafw00f` outputs into **one record per host** — this is the single artifact Layer 3 (Gate Rule 3) and Layer 4 (tech mapping) read. Field names are normalized from each tool's native JSON (verified against the installed tool versions):
+Normalize the raw `httpx`/`naabu`/`wafw00f` outputs into **one record per web origin**, where an origin's identity is **scheme + normalized host + effective port** — *not* bare hostname. `http://h`, `https://h`, and `https://h:8443` are three distinct origins with independent fingerprints; collapsing them onto one host record is how one service's tech gets wrongly attributed to another. Run the `strix-recon-normalize` script (Pipeline Scripts, below) — do not hand-roll host parsing; it uses a real URL parser and handles default/explicit ports, host casing, IPv6, duplicate observations, and redirects.
+
+It writes two artifacts, kept deliberately separate:
+
+- **`assets.jsonl`** — origin-level records (tech, WAF, TLS, status, class are all origin-scoped):
 
 ```json
 {
-  "host": "shop.example.com",
+  "origin": "https://shop.example.com:443",
+  "scheme": "https", "host": "shop.example.com", "port": 443,
+  "requested_origin": "https://shop.example.com:443",
+  "observed_origin": "https://shop.example.com:443",
+  "redirected_offhost": false,
   "url": "https://shop.example.com",
-  "status_code": 200,
-  "title": "Example Shop",
-  "webserver": "nginx",
-  "tech": ["Nginx", "PHP", "WordPress:6.5", "MySQL"],
-  "cdn": "cloudflare",
-  "waf": "Cloudflare",
-  "tls_info": {"version": "tls13", "cipher": "TLS_AES_128_GCM_SHA256", "subject_cn": "shop.example.com", "sans": ["*.example.com", "example.com"]},
-  "ports": [80, 443, 8443],
-  "class": "app"
+  "status_code": 200, "title": "Example Shop", "webserver": "nginx",
+  "tech": ["PHP", "WordPress:6.5"],
+  "cdn": "cloudflare", "waf": "Cloudflare",
+  "tls_info": {"version": "tls13", "cipher": "...", "subject_cn": "shop.example.com", "sans": ["*.example.com"]},
+  "ports": [443],
+  "class": null,
+  "probe_state": "completed",
+  "probe_reason": "probe succeeded with tech fingerprint",
+  "takeover_candidate": false
 }
 ```
 
-- `tech[]` ← httpx `tech` (needs `-td`). `cdn` ← httpx `cdn_name` (null when `cdn` is false). `tls_info` ← httpx `tls.{tls_version,cipher,subject_cn,subject_an}`. `status_code`/`title`/`webserver` ← the same-named httpx fields (note httpx calls it `webserver`, not `server`).
-- `ports[]` ← distinct `port` values from naabu's `{"host","ip","port"}` lines, joined on `host`.
-- `waf` ← wafw00f's `firewall` when `detected` is true, joined on host, else null. (httpx's `cdn_type: "waf"` is a weaker secondary signal.)
-- `class` ← populated by the classification step (3) above, not by any tool — the field Gate Rule 3 keys on.
+- **`host_ports.json`** — `{host: [open ports]}` from naabu, a **host-level** observation kept out of the origin records. An origin's `ports` field is just its own port; a host having 8443 open does not put 8443 on the 443 origin's record. Each open port not already an HTTP origin is a candidate to probe as a new origin (feed it back to `httpx`).
 
-Ready-to-run normalization (reads the three raw files, writes `assets.jsonl`):
+Field provenance (verified against the installed tools' real JSON): `tech[]`←httpx `tech` (needs `-td`); `cdn`←`cdn_name`; `tls_info`←`tls.{tls_version,cipher,subject_cn,subject_an}`; `status_code`/`title`/`webserver`←same-named httpx fields (httpx says `webserver`, not `server`). `waf`←wafw00f `firewall` when `detected`, **joined by the origin parsed from the wafw00f URL** (never broadcast to every origin of a host). `class`←the classification step (3), the field the Layer 3 scope convention keys on.
 
-```python
-import json, collections
-from pathlib import Path
-
-def load_jsonl(p):
-    f = Path(p)
-    return [json.loads(l) for l in f.read_text().splitlines() if l.strip()] if f.exists() else []
-
-ports = collections.defaultdict(set)
-for r in load_jsonl("naabu.jsonl"):
-    if r.get("host") and r.get("port"):
-        ports[r["host"]].add(int(r["port"]))
-
-waf = {}
-wf = Path("wafw00f.json")
-if wf.exists():
-    for r in json.loads(wf.read_text() or "[]"):
-        host = r.get("url", "").split("://")[-1].split("/")[0]
-        if r.get("detected"):
-            waf[host] = r.get("firewall")
-
-with open("assets.jsonl", "w") as out:
-    for r in load_jsonl("httpx_raw.jsonl"):
-        host = r.get("host") or r.get("input", "").split("://")[-1].split("/")[0]
-        tls = r.get("tls") or {}
-        rec = {
-            "host": host,
-            "url": r.get("url"),
-            "status_code": r.get("status_code"),
-            "title": r.get("title"),
-            "webserver": r.get("webserver"),
-            "tech": r.get("tech") or [],
-            "cdn": r.get("cdn_name"),
-            "waf": waf.get(host),
-            "tls_info": {
-                "version": tls.get("tls_version"),
-                "cipher": tls.get("cipher"),
-                "subject_cn": tls.get("subject_cn"),
-                "sans": tls.get("subject_an") or [],
-            } if tls else None,
-            "ports": sorted(ports.get(host, [])),
-            "class": None,  # filled by the classification step (3)
-        }
-        out.write(json.dumps(rec) + "\n")
-```
+**`probe_state`** distinguishes `completed` (tech found), `unknown_tech` (probe OK, no fingerprint), `failed` (httpx `failed:true`), and `no_response` (a host in the optional `hosts.txt` input that produced no probe line at all). This is how a legitimately empty inventory is told apart from a discovery failure, and how an unknown fingerprint continues instead of blocking. **`requested_origin`/`observed_origin`/`redirected_offhost`** preserve a redirect: the record is always keyed to the *requested* origin, so an off-host redirect destination is recorded as metadata and **never auto-promoted** into the inventory — scope-check it first (see Validation) before probing it as its own seed.
 
 ## Application-Layer Recon
 
@@ -362,7 +321,7 @@ A secret is only reported once verified live or clearly valid (per `analysis/cou
 
 ### 3. Content Discovery
 
-**Layer 3 (loud) — hard gate:** this step and Parameter Discovery below run **only** on hosts classified `api`/`app`/`admin`/`auth` in `assets.jsonl` (Gate Rule 3), never across the full inventory. Confirm `layer2_complete.flag` exists first; write `layer3_complete.flag` when the loud steps finish.
+**Layer 3 (loud) — scope convention:** this step and Parameter Discovery below run **only** on origins classified `api`/`app`/`admin`/`auth` in `assets.jsonl` (plus specific Layer 1/2 leads), never across the full inventory. Confirm `strix-recon-state get "$RUN_ID" "$SCOPE_ID" layer2` reads `completed`/`skipped` first, and set `layer3` state when the loud steps finish. (This is an agent-honored convention, not a runtime-enforced gate — see the Layered Execution Model.)
 
 - Fuzz hosts that show a CMS/framework fingerprint or thin crawl output: `ffuf -w wordlist.txt -u https://host.tld/FUZZ -mc 200,204,301,302,307,401,403 -ac -t 20 -rate 50 -noninteractive -of json -o ffuf_host.json` (see `tooling/ffuf.md`).
 - `dirsearch -u https://host.tld -e php,html,js,json` for a fast broad sweep when no specific wordlist angle exists yet.
@@ -391,61 +350,46 @@ Every crawled endpoint, extracted JS route, and discovered parameter not actuall
 
 ## Layer 4 — Tech-Matched Nuclei Fingerprinting
 
-The final layer runs `nuclei`, but **only the template subset matching the tech stack Layer 2 detected** — never the full ~10k-template firehose. It reads `assets.jsonl`'s `tech[]` field (the reason Layer 2 captures it), maps each detected technology to nuclei template selectors, and scans at `critical,high` severity.
+The final layer runs `nuclei`, but **scoped per origin to that origin's own detected stack** — never the full ~10k-template firehose, and never one combined tag list across every origin. **Scan-mode gate:** `standard`/`deep` only; **skip in `quick`** (set `layer4=skipped`) — it is the loudest, slowest layer.
 
-**Scan-mode gate:** run Layer 4 in `standard` and `deep` modes only. **Skip it entirely in `quick` mode** (see `scan_modes/quick.md`) — it is the loudest, slowest layer.
+### Per-origin selectors (no cross-origin leakage)
 
-### Tech → nuclei selector mapping
+The old approach — collect every `tech[]` value across `assets.jsonl` into one `-tags` list and run it against all targets — leaks WordPress templates onto unrelated API origins. Instead run the `strix-recon-selectors` script (Pipeline Scripts, below): it builds a selector set **per origin**, groups origins only when their normalized selector sets are *identical*, validates each product tag against the installed templates (`nuclei -tags <t> -tl`), and writes `/workspace/recon/nuclei_manifest.json` recording each group's origins, tags, template paths, and the reason for every selection. WordPress detected on one origin never causes WordPress templates to run on another.
 
-Build the selector set from the distinct `tech[]` values across `assets.jsonl` (strip any `:version` suffix, lowercase). Products map to a **`-tags`** value, not a `-t http/cves/<product>/` path: nuclei organizes `http/cves/` **by year, not by product**, so `http/cves/wordpress/` does not exist and would silently match nothing. `-tags wordpress` is what actually spans every CVE year dir plus that product's `vulnerabilities`/`technologies`/`misconfiguration` templates (verified against the installed templates: 1709 templates for the tag vs. 0 for the non-existent path).
+Tech→tag rules it applies: normalize each tech (lowercase, strip `:version`), map via its table (`wordpress`→`wordpress`, `nginx`→`nginx`, `apache`/`httpd`→`apache`, `php`, `laravel`, `drupal`, `joomla`, `tomcat`, `jira`, `jenkins`, `gitlab`, `grafana`, `spring`, `kubernetes`, …). Products map to **`-tags`**, not a `-t http/cves/<product>/` path: nuclei organizes `http/cves/` **by year, not product**, so that path does not exist and matches nothing (`-tags wordpress` spans 1709 templates; the path, 0). An unmapped tech is tried as a tag and kept **only if it validates to a non-empty set** — a dead selector is dropped, recorded in the manifest with its reason.
 
-| httpx `tech` value (version-stripped, lowercased) | nuclei selector |
-|---|---|
-| `wordpress` | `-tags wordpress` |
-| `drupal` | `-tags drupal` |
-| `joomla` | `-tags joomla` |
-| `laravel` | `-tags laravel` |
-| `nginx` | `-tags nginx` |
-| `apache` / `apache httpd` | `-tags apache` |
-| `tomcat` | `-tags tomcat` |
-| `php` | `-tags php` |
-| `jira` | `-tags jira` |
-| `jenkins` | `-tags jenkins` |
-| `gitlab` | `-tags gitlab` |
-| `grafana` | `-tags grafana` |
-| `spring` | `-tags spring` |
-| `kubernetes` | `-tags kubernetes` |
+### Selection discipline (not severity alone, not everything-on-everything)
 
-For a detected tech not in this table, try its lowercased, version-stripped name as a tag and **keep it only if it resolves to a non-empty set** — `nuclei -tags <name> -tl` returning zero means no template carries that tag, so drop it rather than pass a dead selector. Collect every surviving tag into one comma-separated `-tags` list for Pass A.
+- **Conditional categories, not always-on.** `http/default-logins/` and `http/exposed-panels/` run only on origins classed `admin`/`auth` (panel/auth evidence). `http/takeovers/` runs only when `takeover_candidate` is set from Layer-1 DNS/provider evidence — never blanket against every origin. The engagement must permit default-login/takeover probing; if not, drop those categories.
+- **A bounded baseline, by category not severity.** Every in-scope origin (including `unknown_tech`) gets `http/exposures/` + `http/misconfiguration/` — useful low-noise exposure/misconfig leads that a `-s critical,high`-only filter would miss. Detection-only results stay recon enrichment (see below); severity is applied on top, it is not the selector.
+- **Empty selectors never broaden.** An origin with no validated product tags gets **only** its baseline paths — the runner must never emit a bare `-tags ` (which scans broadly). The manifest marks such groups `tags: []`.
 
-### Always-on categories (every host, regardless of tech)
+### Run per group, two passes, one shared budget
 
-Independent of the tech stack, always run these category paths — exposure/misconfig classes that are not product-specific:
-
-`-t http/exposed-panels/ -t http/default-logins/ -t http/takeovers/ -t http/misconfiguration/`
-
-### Run as two passes (do not combine `-t` with `-tags` in one run)
-
-`nuclei` treats `-t <path>` + `-tags` as an **AND filter**, not additive: `-t http/exposed-panels/ -tags wordpress` selects only the handful of wordpress-tagged templates *inside* exposed-panels (verified: 1576 → 3), silently dropping the rest. So run two separate passes appending to the same output file — never fold the always-on `-t` paths into the tagged Pass A:
+`nuclei` treats `-t <path>` + `-tags` as an **AND filter**, not additive (`-t http/exposed-panels/ -tags wordpress` → 1576 templates become 3), so tags and paths must be *separate passes*. Per manifest group, run Pass A (`-tags`, only if the group has tags) then Pass B (`-t` paths), each to its **own per-run output file**:
 
 ```bash
-# layer4_targets.txt = the promoted Layer-2 live URLs (classified api/app/admin/auth),
-# not the full inventory — same scope as Layer 3.
+# For each group g in nuclei_manifest.json, with layer4_targets.txt = g.origins
+# (already scoped to promoted/classified origins):
 
-# Pass A — product templates by tag (spans cves-by-year + vulns + misconfig per product)
-nuclei -l layer4_targets.txt -tags wordpress,nginx,php \
+# Pass A — product tags (SKIP entirely if g.tags is empty)
+nuclei -l layer4_targets.txt -tags "$GROUP_TAGS" \
   -s critical,high -rl 50 -c 20 -bs 20 -timeout 10 -retries 1 -ni -silent \
-  -j -o /workspace/recon/nuclei.jsonl
+  -j -o "/workspace/recon/nuclei_run_${RUN_ID}_${GROUP}_tags.jsonl"
 
-# Pass B — always-on categories by path (no -tags, so not AND-filtered away)
-nuclei -l layer4_targets.txt \
-  -t http/exposed-panels/ -t http/default-logins/ -t http/takeovers/ -t http/misconfiguration/ \
-  -s critical,high -rl 50 -c 20 -bs 20 -timeout 10 -retries 1 -ni -silent \
-  -j -o /workspace/recon/nuclei_alwayson.jsonl
-cat /workspace/recon/nuclei_alwayson.jsonl >> /workspace/recon/nuclei.jsonl
+# Pass B — selected category paths (bounded baseline + any conditional categories)
+nuclei -l layer4_targets.txt $GROUP_PATHS \
+  -rl 50 -c 20 -bs 20 -timeout 10 -retries 1 -ni -silent \
+  -j -o "/workspace/recon/nuclei_run_${RUN_ID}_${GROUP}_paths.jsonl"
 ```
 
-`-ni` disables OAST/interactsh unless outbound callbacks are expected and allowed; `-rl 50 -c 20` keeps throughput bounded. The `-tags` list in Pass A is the comma-separated set built from the mapping table above — replace the `wordpress,nginx,php` example with whatever `assets.jsonl` actually detected.
+Then dedup-merge all per-run files into the shared `nuclei.jsonl` with the `strix-recon-merge` script (keyed on template-id + matched location + matcher) — it reads **only** the files you pass and overwrites `nuclei.jsonl`, so it never appends to a stale result from an earlier run:
+
+```bash
+python merge_nuclei.py /workspace/recon/nuclei_run_${RUN_ID}_*.jsonl
+```
+
+**Traffic budget (advisory, not enforced).** `-rl 50 -c 20` bounds a *single* nuclei process. Run groups and passes **sequentially**, not in parallel — launching N groups at once multiplies the effective rate/concurrency against the target N×. The `-rl`/`-c`/`-bs` numbers above are per-process caps the agent must choose to honor; nothing in the engine enforces a cumulative cap across passes. `-ni` disables OAST/interactsh unless callbacks are expected and permitted.
 
 ### Every hit is a lead, not a finding
 
@@ -454,6 +398,364 @@ A nuclei match is a **candidate**, never an auto-reported finding. Route every `
 - Re-fetch and confirm the match is live and reproducible right now — templates carry false positives, and a matcher can fire on an error page, a honeypot, or a WAF block page.
 - A detection-only template (`http/technologies/*`, a version banner) is recon enrichment, not a vulnerability — fold it back into `assets.jsonl`'s `tech[]`, do not report it.
 - A `critical`/`high` template that genuinely fires becomes a candidate for the matching `vulnerabilities/*` skill, carried with the same `record_coverage` / `open_proof_gap` discipline as every other recon lead. The template firing is the start of verification, not the end.
+
+## Pipeline Scripts (run inside the sandbox)
+
+These four stdlib scripts implement the deterministic mechanics the layers above reference. Write each to `/workspace/recon/` and run it there (cwd = `/workspace/recon`). They are the single source of truth for normalization, selector grouping, run-state, and result merging — do not re-derive this logic ad hoc. `strix-recon-selectors` resolves tags via `$STRIX_NUCLEI_BIN` (defaults to `nuclei` on PATH).
+
+**`normalize_assets.py`** — raw httpx/naabu/wafw00f → per-origin `assets.jsonl` + host-level `host_ports.json`:
+
+```python
+# === strix-recon-normalize ===
+# Build per-ORIGIN assets.jsonl (scheme + normalized host + effective port is
+# the identity) from raw httpx/naabu/wafw00f output. Host-level port
+# observations are kept in a SEPARATE host_ports.json and are never copied onto
+# an origin's application fingerprint. Pure stdlib; run in /workspace/recon.
+import json
+from pathlib import Path
+from urllib.parse import urlsplit
+
+DEFAULT_PORT = {"http": 80, "https": 443}
+
+
+def load_jsonl(p):
+    f = Path(p)
+    if not f.exists():
+        return []
+    out = []
+    for line in f.read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            out.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return out
+
+
+def split_origin(url):
+    """(scheme, host, port, origin_str) or None. Lowercases host, brackets
+    IPv6, applies the scheme default port when none is explicit."""
+    if not url:
+        return None
+    if "://" not in url:
+        url = "http://" + url
+    u = urlsplit(url)
+    scheme = (u.scheme or "http").lower()
+    host = (u.hostname or "").lower()
+    if not host:
+        return None
+    try:
+        port = u.port
+    except ValueError:
+        port = None
+    if port is None:
+        port = DEFAULT_PORT.get(scheme, 80)
+    disp = f"[{host}]" if ":" in host else host  # re-bracket IPv6 literals
+    return scheme, host, port, f"{scheme}://{disp}:{port}"
+
+
+# host-level ports from naabu (no scheme) -> host_ports.json, kept separate
+host_ports = {}
+for r in load_jsonl("naabu.jsonl"):
+    h = (r.get("host") or r.get("ip") or "").lower()
+    p = r.get("port")
+    if h and p is not None:
+        host_ports.setdefault(h, set()).add(int(p))
+host_ports = {h: sorted(v) for h, v in host_ports.items()}
+Path("host_ports.json").write_text(json.dumps(host_ports, indent=2))
+
+# WAF joined by ORIGIN parsed from the wafw00f url, never broadcast to a host
+waf_by_origin = {}
+wf = Path("wafw00f.json")
+if wf.exists():
+    try:
+        for r in json.loads(wf.read_text() or "[]"):
+            o = split_origin(r.get("url", ""))
+            if o and r.get("detected"):
+                waf_by_origin[o[3]] = r.get("firewall")
+    except json.JSONDecodeError:
+        pass
+
+# optional Layer-2 input list: lets us tell "discovery failure" (host requested
+# but no probe line) from a legitimately empty inventory
+requested = []
+hl = Path("hosts.txt")
+if hl.exists():
+    requested = [l.strip() for l in hl.read_text().splitlines() if l.strip()]
+
+origins = {}
+seen_hosts = set()
+for r in load_jsonl("httpx_raw.jsonl"):
+    req = r.get("input") or r.get("url")
+    obs = r.get("url") or req
+    ro = split_origin(req)
+    oo = split_origin(obs)
+    key_o = ro or oo        # identity = REQUESTED origin; an off-host redirect
+    if not key_o:           # destination is recorded as metadata, never promoted
+        continue
+    scheme, host, port, origin = key_o
+    seen_hosts.add(host)
+    tls = r.get("tls") or {}
+    failed = bool(r.get("failed"))
+    tech = [t for t in (r.get("tech") or []) if t]
+    if failed:
+        state, reason = "failed", "httpx reported a failed probe"
+    elif not tech:
+        state, reason = "unknown_tech", "probe succeeded, no tech fingerprint"
+    else:
+        state, reason = "completed", "probe succeeded with tech fingerprint"
+    redirected_offhost = bool(ro and oo and ro[1] != oo[1])
+    rec = {
+        "origin": origin, "scheme": scheme, "host": host, "port": port,
+        "requested_origin": ro[3] if ro else None,
+        "observed_origin": oo[3] if oo else None,
+        "redirected_offhost": redirected_offhost,
+        "url": obs,
+        "status_code": r.get("status_code"),
+        "title": r.get("title"),
+        "webserver": r.get("webserver"),
+        "tech": sorted(set(tech)),
+        "cdn": r.get("cdn_name"),
+        "waf": waf_by_origin.get(origin),
+        "tls_info": {
+            "version": tls.get("tls_version"), "cipher": tls.get("cipher"),
+            "subject_cn": tls.get("subject_cn"), "sans": tls.get("subject_an") or [],
+        } if tls else None,
+        "ports": [port],            # ORIGIN port only; host ports -> host_ports.json
+        "class": None,              # filled by the classification step
+        "probe_state": state, "probe_reason": reason,
+        "takeover_candidate": False,  # set true by Layer-1 subdomain_takeover triage
+    }
+    prev = origins.get(origin)
+    if prev is None:
+        origins[origin] = rec
+    else:  # duplicate observation of one origin: union tech, keep best state
+        union = sorted(set(prev["tech"]) | set(rec["tech"]))
+        order = {"completed": 3, "unknown_tech": 2, "failed": 1, "no_response": 0}
+        winner = rec if order.get(rec["probe_state"], 0) >= order.get(prev["probe_state"], 0) else prev
+        winner["tech"] = union
+        origins[origin] = winner
+
+# hosts requested but never probed -> explicit no_response (discovery failure)
+for h in requested:
+    o = split_origin(h)
+    if o and o[1] not in seen_hosts:
+        origins.setdefault(o[3], {
+            "origin": o[3], "scheme": o[0], "host": o[1], "port": o[2],
+            "requested_origin": o[3], "observed_origin": None,
+            "redirected_offhost": False, "url": None, "status_code": None,
+            "title": None, "webserver": None, "tech": [], "cdn": None, "waf": None,
+            "tls_info": None, "ports": [], "class": None,
+            "probe_state": "no_response",
+            "probe_reason": "requested host produced no probe line",
+            "takeover_candidate": False,
+        })
+
+with open("assets.jsonl", "w") as out:
+    for rec in origins.values():
+        out.write(json.dumps(rec) + "\n")
+print(f"assets.jsonl: {len(origins)} origin(s); host_ports.json: {len(host_ports)} host(s)")
+```
+
+**`build_selectors.py`** — per-origin `assets.jsonl` → grouped, validated `nuclei_manifest.json`:
+
+```python
+# === strix-recon-selectors ===
+# Build PER-ORIGIN nuclei selectors, group origins only when their normalized
+# selector sets are identical, validate product tags against the installed
+# template metadata, and write a machine-readable manifest. No cross-origin tag
+# leakage. An empty product-tag set never becomes a bare "-tags" (which would
+# scan broadly); such origins get only the bounded baseline paths.
+import json, os, re, subprocess
+from pathlib import Path
+
+NUCLEI_BIN = os.environ.get("STRIX_NUCLEI_BIN", "nuclei")
+
+TECH_TAG_MAP = {
+    "wordpress": "wordpress", "drupal": "drupal", "joomla": "joomla",
+    "laravel": "laravel", "nginx": "nginx", "apache": "apache",
+    "apache httpd": "apache", "httpd": "apache", "tomcat": "tomcat",
+    "php": "php", "jira": "jira", "jenkins": "jenkins", "gitlab": "gitlab",
+    "grafana": "grafana", "spring": "spring", "kubernetes": "kubernetes",
+}
+
+# bounded baseline categories every in-scope origin gets (low-noise leads)
+BASELINE_PATHS = ["http/exposures/", "http/misconfiguration/"]
+
+
+def norm_tech(t):
+    t = (t or "").strip().lower()
+    t = t.split(":", 1)[0]                        # "wordpress:6.5" -> "wordpress"
+    t = re.sub(r"[\s/_-]*v?\d[\d.]*$", "", t)     # strip a trailing version token
+    return t.strip()
+
+
+def load_jsonl(p):
+    f = Path(p)
+    return [json.loads(l) for l in f.read_text().splitlines() if l.strip()] if f.exists() else []
+
+
+_tl_cache = {}
+def tag_has_templates(tag):
+    if tag in _tl_cache:
+        return _tl_cache[tag]
+    try:
+        out = subprocess.run([NUCLEI_BIN, "-tags", tag, "-tl"],
+                             capture_output=True, text=True, timeout=60)
+        ok = any(line.strip().endswith(".yaml") for line in out.stdout.splitlines())
+    except (FileNotFoundError, subprocess.SubprocessError):
+        ok = None                                 # nuclei unavailable -> unverified
+    _tl_cache[tag] = ok
+    return ok
+
+
+groups = {}
+for rec in load_jsonl("assets.jsonl"):
+    if rec.get("probe_state") not in ("completed", "unknown_tech"):
+        continue
+    origin = rec["origin"]
+    cls = (rec.get("class") or "").lower()
+
+    tags, reasons = set(), {}
+    for t in rec.get("tech") or []:
+        n = norm_tech(t)
+        tag = TECH_TAG_MAP.get(n)
+        if not tag and n:
+            if tag_has_templates(n):              # unmapped: accept only if real
+                tag = n
+        if not tag:
+            continue
+        v = tag_has_templates(tag)
+        if v is False:
+            reasons[f"tag:{tag}"] = "dropped: no template carries this tag"
+            continue
+        tags.add(tag)
+        reasons[f"tag:{tag}"] = "validated" if v else "unverified (nuclei unavailable)"
+
+    paths = list(BASELINE_PATHS)
+    for p in BASELINE_PATHS:
+        reasons[f"path:{p}"] = "bounded baseline (all in-scope origins)"
+    if cls in ("admin", "auth"):
+        paths += ["http/default-logins/", "http/exposed-panels/"]
+        reasons["path:http/default-logins/"] = f"class={cls} (panel/auth evidence)"
+        reasons["path:http/exposed-panels/"] = f"class={cls} (panel/auth evidence)"
+    if rec.get("takeover_candidate"):
+        paths.append("http/takeovers/")
+        reasons["path:http/takeovers/"] = "takeover_candidate=true (DNS/provider evidence)"
+
+    sig = (tuple(sorted(tags)), tuple(sorted(set(paths))))
+    g = groups.setdefault(sig, {"origins": [], "tags": sorted(tags),
+                                "template_paths": sorted(set(paths)), "reasons": {}})
+    g["origins"].append(origin)
+    g["reasons"].update(reasons)
+
+manifest = {"groups": list(groups.values()),
+            "nuclei_validation": dict(_tl_cache)}
+Path("nuclei_manifest.json").write_text(json.dumps(manifest, indent=2))
+
+n_orig = sum(len(g["origins"]) for g in manifest["groups"])
+print(f"nuclei_manifest.json: {len(manifest['groups'])} group(s), {n_orig} origin(s)")
+for g in manifest["groups"]:
+    if not g["tags"]:
+        print(f"  group {g['origins']}: no product tags -> baseline paths only, "
+              f"NO -tags pass (an empty -tags would scan broadly)")
+```
+
+**`recon_state.py`** — run-specific stage state (replaces the old static `layer*_complete.flag`):
+
+```python
+# === strix-recon-state ===
+# Run-specific stage state, superseding the old static layer*_complete.flag
+# files. State is honored ONLY for the current run_id + scope_id; a file left by
+# any earlier run or a different scope reads back as "pending" (never authorizes
+# current-run work). Stages: pending|partial|completed|failed|skipped.
+import json, sys
+from pathlib import Path
+
+STATE = Path("recon_state.json")
+VALID = {"pending", "partial", "completed", "failed", "skipped"}
+
+
+def _stages(run_id, scope_id):
+    if not STATE.exists():
+        return {}
+    try:
+        d = json.loads(STATE.read_text())
+    except json.JSONDecodeError:
+        return {}
+    if d.get("run_id") != run_id or d.get("scope_id") != scope_id:
+        return {}                     # stale / different scope -> ignore entirely
+    return d.get("stages", {})
+
+
+def main(argv):
+    # get <run_id> <scope_id> <stage>
+    # set <run_id> <scope_id> <stage> <status>
+    op, run_id, scope_id, stage = argv[1], argv[2], argv[3], argv[4]
+    stages = _stages(run_id, scope_id)
+    if op == "get":
+        print(stages.get(stage, "pending"))
+    elif op == "set":
+        status = argv[5]
+        if status not in VALID:
+            sys.exit(f"invalid status: {status}")
+        stages[stage] = status
+        STATE.write_text(json.dumps(
+            {"run_id": run_id, "scope_id": scope_id, "stages": stages}, indent=2))
+        print(f"{stage}={status}")
+    else:
+        sys.exit(f"unknown op: {op}")
+
+
+if __name__ == "__main__":
+    main(sys.argv)
+```
+
+**`merge_nuclei.py`** — dedup-merge per-run nuclei outputs into a fresh `nuclei.jsonl`:
+
+```python
+# === strix-recon-merge ===
+# Merge the per-run, per-group nuclei output files passed as arguments into one
+# deduplicated nuclei.jsonl. Dedup key = (template-id, matched location, matcher
+# name). Reads ONLY the files given as args and overwrites nuclei.jsonl, so it
+# never appends to results left by an earlier run.
+import json, sys
+from pathlib import Path
+
+
+def key(r):
+    tid = r.get("template-id") or r.get("templateID") or ""
+    loc = r.get("matched-at") or r.get("matched_at") or r.get("host") or ""
+    matcher = r.get("matcher-name") or r.get("matcher_name") or ""
+    return (tid, loc, matcher)
+
+
+seen, merged = set(), []
+for path in sys.argv[1:]:
+    p = Path(path)
+    if not p.exists():
+        continue
+    for line in p.read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            r = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        k = key(r)
+        if k in seen:
+            continue
+        seen.add(k)
+        merged.append(r)
+
+with open("nuclei.jsonl", "w") as out:
+    for r in merged:
+        out.write(json.dumps(r) + "\n")
+print(f"nuclei.jsonl: {len(merged)} unique finding(s) from {len(sys.argv) - 1} input file(s)")
+```
 
 ## Testing Methodology
 
@@ -466,7 +768,7 @@ A nuclei match is a **candidate**, never an auto-reported finding. Route every `
 7. **Active TLS pivot** - `httpx -tls-grab` on live IPs/ports to grab SANs missing from public CT
 8. **Consolidate & probe** - dedupe, `httpx` probe, classify, and route to specialists
 9. **Application-layer recon** - crawl and extract JS, probe known paths/specs, content-discover, mine parameters, then rank into an attack queue (see Application-Layer Recon)
-10. **Tech-matched vuln fingerprinting** - `nuclei` scoped to the tech stack in `assets.jsonl`, two passes, every hit a lead (see Layer 4 — Tech-Matched Nuclei Fingerprinting; `standard`/`deep` modes only)
+10. **Tech-matched vuln fingerprinting** - `nuclei` scoped **per origin** via `nuclei_manifest.json` (no cross-origin tag leakage), results dedup-merged, every hit a lead (see Layer 4; `standard`/`deep` modes only)
 
 ## Validation
 
@@ -474,6 +776,7 @@ A nuclei match is a **candidate**, never an auto-reported finding. Route every `
 2. Attribute assets to the target via matching cert org, shared cert fingerprint, or DNS under a seed domain
 3. Deduplicate vhost aliases and CDN edges down to distinct origins so the surface is not inflated
 4. Record provenance (which source produced each asset) for reproducibility
+5. **Scope-check redirect destinations before promoting them.** When `assets.jsonl` marks an origin `redirected_offhost`, its `observed_origin` is only a lead — confirm the destination is in scope (per `coordination/root_agent.md`'s Program Scope) before probing it as its own seed. The normalizer never auto-promotes it.
 
 ## False Positives
 

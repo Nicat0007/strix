@@ -10,6 +10,8 @@ Official docs:
 - https://docs.projectdiscovery.io/opensource/nuclei/mass-scanning-cli
 - https://github.com/projectdiscovery/nuclei
 
+For the **black-box recon pipeline**, do not use `-as` or one combined `-tags` list across all targets — `reconnaissance/asset_discovery.md`'s Layer 4 is authoritative there: it builds a **per-origin** selector manifest (`nuclei_manifest.json`) so one origin's tech never selects templates for another, runs tags and category paths as separate passes (they AND-filter if combined), and dedup-merges per-run outputs. The generic patterns below are for ad-hoc, single-target use outside that pipeline.
+
 Canonical syntax:
 `nuclei [flags]`
 
