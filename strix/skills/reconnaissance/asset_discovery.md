@@ -13,6 +13,32 @@ Consolidation gets you a live, classified host — that is an entry point, not t
 
 Before or alongside the pipeline below, also run `dorking` — it needs only the seed, costs no traffic to the target's own infrastructure, and often produces the single highest-value finding of the engagement (a live committed credential).
 
+## Layered Execution Model (Noise Gradient)
+
+Run recon as four ordered layers, quietest first. This is a **hard ordering rule, not advice**: each layer's output gates the next, so a loud step never fires before the passive surface is fully built. Write a completion flag at the end of each layer and **do not begin layer N+1 until layer N's flag exists**:
+
+- `/workspace/recon/layer1_complete.flag`
+- `/workspace/recon/layer2_complete.flag`
+- `/workspace/recon/layer3_complete.flag`
+
+(Layer 4 writes `/workspace/recon/nuclei.jsonl`; no flag needed after the last layer.)
+
+| Layer | What runs | Target traffic | Where it's documented |
+|---|---|---|---|
+| **1 — Passive / OSINT** | CT (crt.sh), `subfinder -all`, passive DNS, ASN/IP mapping, `gau`/`waybackurls`, GitHub/Google dorking | **Zero** to the target | High-Value Sources, Key/Advanced Techniques, `dorking` |
+| **2 — Active light** | `httpx` live-probe + `-td` tech fingerprint + `-tls-grab`, classification into `assets.jsonl`, `naabu`/`nmap --top-ports 1000`, `katana` crawl + bounded headless XHR | Low (looks like a browser/crawler) | Consolidation & Probing, Application-Layer Recon step 1 |
+| **3 — Param / endpoint discovery** | `arjun`, `ffuf`/`dirsearch` content discovery, known-path probing | **High** (obvious non-human bruteforce) | Application-Layer Recon steps 2–4 |
+| **4 — Vuln fingerprinting** | `nuclei`, templates scoped to the tech stack detected in Layer 2 | Moderate, controllable | Layer 4 — Tech-Matched Nuclei Fingerprinting (below) |
+
+### Gate Rules (hard, not advisory)
+
+1. **Layer 1 before Layer 2.** Complete passive enumeration — CT + `subfinder` + historical URLs written under `/workspace/recon/` — then write `layer1_complete.flag` before any active probe touches the target. The deduped passive inventory is Layer 2's input.
+2. **Layer 2 before Layer 3.** Live-probe, fingerprint, and classify every host into `assets.jsonl` (see the Layer 2 output schema in Consolidation & Probing), then write `layer2_complete.flag`, before any directory/parameter bruteforce.
+3. **Layer 3 only on promoted hosts.** Run `arjun`, `ffuf`, `dirsearch`, and content discovery **only** against hosts whose `assets.jsonl` classification is `api`, `app`, `admin`, or `auth`. **Never run Layer 3 against the full inventory** — marketing/CDN/static hosts are excluded by rule, not by judgment. A host outside those classes gets Layer 3 only if a specific Layer 1/2 lead (a historical parameterized URL, a JS-extracted route) points at it, and then only at that lead, not a blind sweep.
+4. **Layer 4 reads Layer 2's tech field.** The nuclei template selection is driven by `assets.jsonl`'s `tech[]` field, so Layer 4 cannot run before Layer 2 populates it, and is additionally gated by scan mode (see Layer 4).
+
+Flags are completion markers for ordering only — the real artifacts other agents consume are `subs.jsonl` / `assets.jsonl` / `attack_queue.md` / `nuclei.jsonl`, per the reuse convention in `coordination/root_agent.md`.
+
 ## Attack Surface
 
 - Hosts discoverable via issued certificates (CT logs) but absent from DNS brute force
@@ -259,6 +285,8 @@ A secret is only reported once verified live or clearly valid (per `analysis/cou
 - Found a spec → load `custom/api_spec_testing.md` and drive the API from its schema. Found `/graphql` → load `protocols/graphql.md`.
 
 ### 3. Content Discovery
+
+**Layer 3 (loud) — hard gate:** this step and Parameter Discovery below run **only** on hosts classified `api`/`app`/`admin`/`auth` in `assets.jsonl` (Gate Rule 3), never across the full inventory. Confirm `layer2_complete.flag` exists first; write `layer3_complete.flag` when the loud steps finish.
 
 - Fuzz hosts that show a CMS/framework fingerprint or thin crawl output: `ffuf -w wordlist.txt -u https://host.tld/FUZZ -mc 200,204,301,302,307,401,403 -ac -t 20 -rate 50 -noninteractive -of json -o ffuf_host.json` (see `tooling/ffuf.md`).
 - `dirsearch -u https://host.tld -e php,html,js,json` for a fast broad sweep when no specific wordlist angle exists yet.
