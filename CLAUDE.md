@@ -3103,3 +3103,67 @@ with no rebuild. The pipeline's flag-gates and `assets.jsonl` schema are
 conventions the agent follows from the skill text — there is no Python
 enforcement layer, matching this repo's skill-first philosophy (§1).
 
+## 28. BLACK-BOX RECON PIPELINE — CORRECTNESS PASS (§27 FOLLOW-UP;
+    IMPLEMENTED, COMMITTED LOCALLY, NOT PUSHED)
+
+Correctness pass over §27 after auditing the *committed* files (not the
+prior summary). Six confirmed defects, all fixed skill-first by embedding
+four deterministic stdlib scripts in `asset_discovery.md`'s new "Pipeline
+Scripts" appendix (the only way to ship sandbox-side code with no
+Dockerfile rebuild, per §17) and testing the **extracted** scripts (the
+§21/§22 precedent), not a hand-copied duplicate.
+
+1. **Cross-target selector leakage** — old Layer 4 collected distinct
+   `tech[]` across ALL origins into one `-tags` list run against every
+   target (WordPress templates hit unrelated API origins). `strix-recon-selectors`
+   now builds selectors **per origin**, groups origins only when selector
+   sets are identical, validates each tag against installed templates, and
+   writes `nuclei_manifest.json` (origins/tags/paths/per-selection reason).
+   Empty tag set → baseline paths only, never a bare `-tags`.
+2. **Asset identity** — old normalizer keyed on bare hostname via
+   `.split("://")`, collapsing http/https/alt-port and host-broadcasting
+   ports/WAF. `strix-recon-normalize` now uses a real URL parser; identity =
+   scheme+host+effective port; host-level ports kept in a separate
+   `host_ports.json`; WAF joined per origin; IPv6/casing/default-ports/
+   duplicates handled; requested vs observed origin preserved; an off-host
+   redirect is recorded as metadata, never auto-promoted (scope-check first).
+3. **Unknown tech blocked recon** — empty `tech` no longer blocks Layer 2;
+   recorded as `probe_state` (`completed`/`unknown_tech`/`failed`/
+   `no_response`) and continues with the bounded baseline. `no_response`
+   vs legitimately-empty inventory is distinguished via the optional
+   `hosts.txt` input.
+4. **Layer 4 selection/budget** — default-logins/exposed-panels only on
+   `admin`/`auth` origins; takeovers only on a `takeover_candidate`;
+   bounded baseline (`exposures`+`misconfiguration`) chosen by category not
+   severity; passes run sequentially per group to per-run files;
+   `strix-recon-merge` dedups by (template-id, location, matcher) into a
+   fresh `nuclei.jsonl` (no stale append). Cumulative budget documented as
+   advisory.
+5. **Run-specific state** — static `layer*_complete.flag` replaced by
+   `strix-recon-state` keyed on `run_id`+`scope_id`, states
+   pending/partial/completed/failed/skipped; a stale or different-scope
+   file reads `pending` (never authorizes current-run work); a skipped
+   optional stage doesn't deadlock. Language corrected throughout: these
+   are agent-honored conventions, explicitly **not** runtime-enforced gates.
+6. **Tests** — `tests/test_recon_pipeline.py` (12) extracts the committed
+   embedded scripts and covers every case above with local mocks/fixtures
+   (no public scanning). A real harness bug was caught: naming the extracted
+   selector file `selectors.py` shadowed the stdlib `selectors` that
+   `subprocess` imports (circular import) — fixed with a `recon_` prefix.
+
+Files: `strix/skills/reconnaissance/asset_discovery.md` (Layered Execution
+Model, Layer 2 output, Layer 4, + Pipeline Scripts appendix),
+`strix/skills/tooling/nuclei.md` (pointer so its generic `-as` baseline
+isn't mistaken for the recon pipeline), `pyproject.toml` (one test
+per-file-ignore, `S603`), `tests/test_recon_pipeline.py`. Full suite: 1303
+passed, 1 skipped, 1 pre-existing/unrelated `test_pricing` grok-4.5
+litellm-alias failure — demonstrated identical on an isolated HEAD worktree
+clean of this task. ruff clean.
+
+**Limitation (explicit):** layer ordering, Layer 3 scope, and traffic
+budgets are skill-first conventions the agent follows by reading the skill
+— nothing in the engine enforces them. Only the per-origin selector
+grouping, identity normalization, run-state semantics, and result dedup are
+deterministic (scripts + tests). Committed locally in focused commits; not
+pushed.
+
