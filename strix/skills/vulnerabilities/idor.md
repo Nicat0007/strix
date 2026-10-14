@@ -7,6 +7,8 @@ description: IDOR/BOLA testing for object-level authorization failures and cross
 
 Object-level authorization failures (BOLA/IDOR) lead to cross-account data exposure and unauthorized state changes across APIs, web, mobile, and microservices. Treat every object reference as untrusted until proven bound to the caller.
 
+**Driven from the hypothesis worklist.** Pull work with `query_hypotheses(pending_only=true, vuln_category="idor")` — the inventory→hypothesis pipeline already pairs a concrete resource with the actor that saw it, which is exactly the cross-actor signal IDOR tests. Record each replay with `record_test_attempt(hypothesis_id=..., tool="manual", tool_rationale="replay actor-a's object request as actor-b", outcome=..., result_status=..., validation_required="prove the body is the other user's private data")`, attaching the proxy request id as `input_evidence_ref` so it is replay-resolved. A matching status/body across actors is `needs_validation`, not confirmed — clear the `## Impact Escalation` bar (a real cross-user record or state change) and then `update_hypothesis(status="confirmed", ...)`. Keep the negative control attached: a `403` for the other actor is counterevidence (`update_hypothesis(add_counterevidence=...)`, status `ruled_out`), not silence.
+
 ## Attack Surface
 
 **Scope**
@@ -335,6 +337,8 @@ same-tenant retest proves nothing.
 - IDOR + Race: bypass spot checks with simultaneous requests
 
 ## Testing Methodology
+
+Source the object-bearing endpoints from the attack-surface inventory instead of a free-text list: `query_attack_surface(param_location="path")` and `query_attack_surface(actor_ref=...)` surface endpoints with id-shaped selectors and what each principal already observed on them (the per-actor status/shape difference is the core IDOR signal). Record progress per `(endpoint, actor, "idor")` with `record_endpoint_test(..., category="idor", status="pending"|"completed"|"blocked")`; the confirmed finding still goes through `create_vulnerability_report`/`record_coverage`.
 
 1. **Build matrix** - Subject × Object × Action matrix (who can do what to which resource)
 2. **Obtain principals** - At least two: owner and non-owner (plus admin/staff if applicable); two distinct tenants if `## Multi-Tenant / Tenant-Boundary Testing` applies

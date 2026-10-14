@@ -27,14 +27,30 @@ from strix.tools.agents_graph.tools import (
     view_agent_graph,
     wait_for_agents,
 )
+from strix.tools.attack_surface.tools import (
+    ingest_recon_endpoints,
+    query_attack_surface,
+    record_endpoint,
+    record_endpoint_test,
+)
 from strix.tools.coverage.tools import (
     check_route_coverage,
     list_coverage,
     record_coverage,
     update_coverage,
 )
+from strix.tools.crawl_executor.tools import (
+    list_crawl_jobs,
+    run_crawl_job,
+)
 from strix.tools.file_context_cache.tools import query_file_summary, record_file_summary
 from strix.tools.finish.tool import finish_scan
+from strix.tools.hypotheses.tools import (
+    create_hypothesis,
+    query_hypotheses,
+    record_test_attempt,
+    update_hypothesis,
+)
 from strix.tools.load_skill.tool import load_skill
 from strix.tools.mcp import call_mcp, describe_mcp, list_mcps
 from strix.tools.negative_knowledge.tools import (
@@ -66,6 +82,7 @@ from strix.tools.reporting.tool import (
     list_reports,
 )
 from strix.tools.respond.tool import respond_to_user
+from strix.tools.sqli_executor.tools import run_sqli_test
 from strix.tools.thinking.tool import think
 from strix.tools.threat_model.tools import (
     amend_threat_model,
@@ -606,6 +623,17 @@ _BASE_TOOLS: tuple[Tool, ...] = (
     update_coverage,
     list_coverage,
     check_route_coverage,
+    record_endpoint,
+    ingest_recon_endpoints,
+    query_attack_surface,
+    record_endpoint_test,
+    run_crawl_job,
+    list_crawl_jobs,
+    create_hypothesis,
+    update_hypothesis,
+    record_test_attempt,
+    query_hypotheses,
+    run_sqli_test,
     query_negative_knowledge,
     record_negative_knowledge,
     query_file_summary,

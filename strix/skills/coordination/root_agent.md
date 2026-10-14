@@ -86,6 +86,20 @@ the existing artifact is missing, stale for the specific host in question,
 or the subagent needs a probe recon didn't do (e.g. an authenticated crawl
 after login).
 
+The `/workspace/recon/*` files are ephemeral (the sandbox is torn down at
+run end). The durable, cross-agent, **resume-surviving** endpoint record is
+the host-side attack-surface inventory (`record_endpoint` /
+`ingest_recon_endpoints` / `query_attack_surface`), shared by every agent in
+the tree exactly like the coverage ledger. Tell authorization and
+parameter-mutation subagents to `query_attack_surface` for their worklist
+(by origin / actor / method / `test_status="pending"`) instead of re-deriving
+endpoints, and to record discovered endpoints there as they go. On
+`--resume`, the inventory is restored with each endpoint's original
+timestamps and provenance — but a restored `authenticated` observation only
+records *what an actor once saw*; its session may be stale, so re-check the
+session (per `reconnaissance/account_provisioning.md`) before trusting a
+restored authenticated observation rather than assuming the login still holds.
+
 The same discipline applies to white-box scans: source-aware triage writes
 its distilled entry-point map to `/workspace/.source-aware/entry_points.md`
 (see `custom/source_aware_sast.md`'s baseline bundle and

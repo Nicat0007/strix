@@ -7,6 +7,18 @@ description: SQL injection testing covering union, blind, error-based, and ORM b
 
 SQLi remains one of the most durable and impactful vulnerability classes. Modern exploitation focuses on parser differentials, ORM/query-builder edges, JSON/XML/CTE/JSONB surfaces, out-of-band exfiltration, and subtle blind channels. Treat every string concatenation into SQL as suspect.
 
+**Driven from the hypothesis worklist.** Pull your work with `query_hypotheses(pending_only=true, vuln_category="sql_injection")` rather than re-deriving candidates — each hypothesis already carries the endpoint, concrete resource, actor, the parameter/operation under test, and its motivating evidence. Before running a tool, record *why it fits* with `record_test_attempt(hypothesis_id=..., tool="sqlmap"|"manual", tool_rationale="this param concatenates into a WHERE clause", outcome=..., result_status=..., validation_required=...)`. Do **not** launch sqlmap just because a parameter is named `id`/`q` — the hypothesis must have a real rationale first. A boolean/time oracle is `needs_validation`, not a finding: `record_test_attempt` cannot set `confirmed`; only extract a real sensitive record (see `## Impact Escalation`) and then `update_hypothesis(status="confirmed", confirmation=...)`. Attach the proxy request id as `request_ref`/`input_evidence_ref` so the replay is resolved, not assumed.
+
+**Targeted executor (`run_sqli_test`).** For a selected SQLi hypothesis, call `run_sqli_test(hypothesis_id=..., request_ref=<stored proxy request id>, param_name=..., param_location="query"|"body"|"cookie"|"header")`. It is explicitly per-hypothesis — not an auto-scanner. It retrieves the stored request, validates the destination's host/port/path against operator scope *before* any traffic, isolates exactly the named parameter *in the named location* with a `*` marker (a same-named input elsewhere is untouched — so pick the right `param_location`), baselines the session, and runs detection-only sqlmap with redirects disabled. It records the attempt for you. A positive is `needs_validation`, never `confirmed`.
+
+**When a test is blocked, investigate — do not read it as "no vulnerability."** A `403`, WAF/challenge page, `429`, or expired session is recorded `blocked` (the class/param is NOT closed) with an evidence-backed classification and a recommended next action. Continue with a *justified, bounded* alternative inside scope:
+- **Invalid/expired auth** → re-provision via `account_provisioning`, then retry; never log session failure as a SQLi (negative or positive) result.
+- **Rate limit (`429`/`Retry-After`)** → `run_sqli_test(..., continuation="backoff")` (bounded delay + single thread). Do not rotate infrastructure to evade limits.
+- **Browser/bot challenge** → `continuation="browser_handoff"`: solve it in `agent_browser`, recapture a fresh request, then retry. This executor does not solve challenges.
+- **Suspected filtering (WAF)** → optionally one `continuation="tamper:<name>"` from the detection-only allowlist (`space2comment`, `charencode`, `randomcase`, `between`, `apostrophemask`, `apostrophenullencode`). A `403→200` change is **not** a confirmed bypass or a finding — it still needs semantic evidence of the expected operation and the normal validation gate. sqlmap has no request-count cap; rely on the enforced time/concurrency/attempt limits.
+
+Leave blocked/`needs_validation` hypotheses visible in the worklist as follow-up; a block is unresolved work, not a negative.
+
 ## Attack Surface
 
 **Databases**

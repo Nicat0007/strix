@@ -7,6 +7,8 @@ description: BFLA testing for action-level authorization failures across endpoin
 
 BFLA is action-level authorization failure: callers invoke functions (endpoints, mutations, admin tools) they are not entitled to. It appears when enforcement differs across transports, gateways, roles, or when services trust client hints. Bind subject × action at the service that performs the action.
 
+**Driven from the hypothesis worklist.** Pull work with `query_hypotheses(pending_only=true, vuln_category="broken_function_level_authorization")`; each hypothesis names the operation under test and the actor replaying it. Record attempts with `record_test_attempt(hypothesis_id=..., tool="manual", tool_rationale="low-priv actor-b invokes the admin operation actor-a can", outcome=..., result_status=..., validation_required="prove the action actually took effect, not just a 200")`, attaching the proxy request id so it is replay-resolved. A permissive status alone is `needs_validation`; confirm only with a demonstrated unauthorized effect, then `update_hypothesis(status="confirmed", ...)`. A denial for the lower-privileged actor is counterevidence to attach and `ruled_out`, kept visible — not dropped.
+
 This file's axis is which function a caller may invoke, regardless of
 target object — the complementary axis, which specific object a call may
 act on, is `idor.md`. A privileged action reached with the *wrong* object
@@ -188,6 +190,8 @@ Real BFLA bugs live in these stack-specific mistakes more often than in generic 
 - BFLA + Business Logic: a reachable-but-unintended approval/finalize action lets you skip or reorder a workflow step that should require a privileged actor
 
 ## Testing Methodology
+
+Pull the actions to test from the structured attack-surface inventory rather than re-deriving them from free-text recon: `query_attack_surface(method=...)` lists the discovered endpoints per method and carries each endpoint's per-actor observations (which actor already saw which status). Track each `(endpoint, actor, "bfla")` cell with `record_endpoint_test(endpoint_id, category="bfla", actor_ref=..., status="pending"|"completed"|"blocked")`, and query `test_status="pending"` to see what the verb/endpoint sweep still owes — this is the endpoint-level worklist that complements the role-hierarchy matrix below. (It does not replace `record_coverage`: file the actual authorization conclusion there.)
 
 1. **Build Actor × Action matrix** - Unauth, basic, premium, staff/admin; enumerate actions per role. Append each cell's result to `/workspace/recon/actor_action_matrix.jsonl` as you go (`{"principal": ..., "role": ..., "action": "<METHOD> <route>", "result": "allowed"|"denied"}`) — this is the only artifact this matrix produces, and `reconnaissance/trust_boundary_mapping.md` is the sole consumer, deriving role hierarchy from it rather than from role names.
 2. **Obtain tokens/sessions** - For each role

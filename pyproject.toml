@@ -243,6 +243,13 @@ ignore = [
 "tests/test_report_pdf.py" = ["S105", "S106"]
 # Fake MCP server matches the SDK's MCPServer signature; its args are unused.
 "tests/test_mcp_client.py" = ["S105", "S106", "ARG002"]
+# Fake/host transports match the sandbox session's exec/read/write signature;
+# some args (timeout/shell) are intentionally unused by the stand-in, and the
+# fake's exec is a command dispatcher with one return per emulated program.
+"tests/test_crawl_executor.py" = ["ARG002", "PLR0911"]
+# Transport/provider fakes match a callee signature whose args they ignore
+# (ARG001/ARG002); the disposable app is DELIBERATELY SQL-injectable (S608).
+"tests/test_sqli_executor.py" = ["ARG001", "ARG002", "S608"]
 # MCP connection request in a test carries a dummy bearer token.
 "tests/test_runner_root_prompt.py" = ["S106"]
 # Harness runs the skill's embedded recon scripts via subprocess with trusted,
@@ -266,6 +273,25 @@ ignore = [
 "strix/tools/**/*.py" = [
     "ARG001", # Unused function argument (tools may have unused args for interface consistency)
 ]
+# An SDK function_tool's parameter list *is* its JSON schema (get_type_hints is
+# read at registration), so a recording tool with many optional fields cannot
+# collapse them into a dataclass without changing the agent-facing contract —
+# same reason reporting/tool.py's create_*_report tools carry this.
+"strix/tools/attack_surface/tools.py" = ["PLR0917"]
+# run_crawl_job's parameters ARE its agent-facing JSON schema (origins, actor,
+# scope, auth-check markers, limits); collapsing them would hide the contract.
+# The orchestrator reaches into attack_surface internals to reuse the committed
+# ingestion adapters rather than duplicate them.
+"strix/tools/crawl_executor/tools.py" = ["PLR0917", "SLF001"]
+# create/update_hypothesis parameters ARE the agent-facing JSON schema (endpoint,
+# resource, actor, param/operation, rationale, evidence, triage labels); the
+# worklist reuses attack_surface internals (redactor/constants) rather than
+# duplicating them.
+"strix/tools/hypotheses/tools.py" = ["PLR0917", "SLF001"]
+# run_sqli_test parameters ARE the agent-facing JSON schema; the executor reuses
+# crawl_executor transport helpers and hypotheses internals rather than
+# duplicating them (SLF001).
+"strix/tools/sqli_executor/tools.py" = ["PLR0917", "SLF001"]
 # Custom Docker subclass duplicates parent body; some imports are for annotations.
 # Backend factories import their backend's deps lazily so deployments
 # that pick a different backend don't need every backend's libs installed.

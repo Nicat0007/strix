@@ -89,6 +89,52 @@ Write every obtained credential/token to `/workspace/recon/auth_tokens.txt` (or 
 
 `owned_objects` is a list because an account can accumulate more than one object over a scan — append to it rather than overwriting the row each time a new object is created under this account.
 
+## Feeding the Attack-Surface Inventory per Actor
+
+Once an account exists, the endpoints it can reach are observed under that
+account, not anonymously. The inventory keeps each actor's observation of the
+same endpoint separate — that per-actor status/shape difference is exactly the
+raw material `idor.md` and `broken_function_level_authorization.md` compare.
+
+**Run one authenticated crawl per provisioned actor with `run_crawl_job`.** Once
+`auth_accounts.jsonl` holds an actor's session, call:
+
+```
+run_crawl_job(
+  origins="https://app.target.tld", actor_ref="actor-a",
+  auth_check_url="https://app.target.tld/account",   # an authenticated-only page
+  auth_check_marker="actor-a@example.com",            # text only a logged-in response contains
+  auth_check_absent_marker="Sign in")                 # text only a logged-out response contains
+```
+
+It reads that actor's token/cookie from `auth_accounts.jsonl` (by `principal` or
+`role`), **verifies the session with the application-specific check before
+crawling** (HTTP 200 alone is not treated as authenticated), crawls the
+authorized origins as that actor in the sandbox, and ingests the result into the
+inventory with `actor_ref="actor-a"` / `auth_state="authenticated"`. Run it again
+per additional actor (`actor-b`, ...) to keep contexts isolated; the anonymous
+pass is `run_crawl_job(..., actor_ref="anonymous")` (no check needed), driven
+from `asset_discovery.md`.
+
+Honesty bounds, unchanged by the executor:
+
+- It is **not** an auto-login crawler. It uses the session you already
+  provisioned; it never logs in, and auto-login is deliberately not used. A
+  blocked/invalid session makes the job fail with an `invalid` auth outcome
+  (recorded with evidence) rather than crawling and mislabelling the result.
+- Supply a real `auth_check_*`. Without one, a named actor's crawl is recorded
+  `auth_state="unknown"`, not `authenticated` — a credential is not proof.
+- Pass only the actor **reference**, never the token, to any inventory tool: the
+  session stays in `auth_accounts.jsonl`, the executor reads it from there, and
+  it never appears in tool output. On `--resume`, a prior job's recorded session
+  validity and any ephemeral request references require revalidation (check
+  `list_crawl_jobs` for `requires_revalidation`).
+- The manual paths remain supported for anything the executor can't reach:
+  `ingest_recon_endpoints(records=..., source_format="katana", actor_ref="actor-a", auth_state="authenticated")`
+  for a crawl you ran yourself, or
+  `record_endpoint(..., actor_ref="actor-a", auth_state="authenticated", request_ref=<caido request id>)`
+  for a single request you drove in `agent_browser`/the proxy.
+
 ## Discipline
 
 - Never send an OTP or verification code to a real third party's phone number or email — only identifiers you control as throwaways, or ones the operator explicitly supplies and confirms they control for this purpose

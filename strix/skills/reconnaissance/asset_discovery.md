@@ -6,6 +6,39 @@ description: Passive asset and attack-surface discovery via certificate transpar
 # Asset Discovery
 
 > **Black-box artifact note:** For black-box targets, `entry_points.md` is **NOT** produced here — it is a white-box-only artifact built inside the sandbox by `custom/source_aware_sast.md`. The black-box equivalents are `/workspace/recon/assets.jsonl` (Layer 2 structured host inventory), `/workspace/recon/attack_queue.md` (the prioritized worklist), and `/workspace/recon/mutation_candidates.md`. **Do not reference `entry_points.md` in black-box agents** — point them at these three instead.
+>
+> **Durable endpoint inventory:** the `/workspace/recon/*` files above are
+> ephemeral sandbox scratch (destroyed at run end). The *endpoints* they
+> discover belong in the host-side **attack-surface inventory** — the
+> `record_endpoint` / `ingest_recon_endpoints` / `query_attack_surface` tools.
+> That store is structured (origin+method+params+per-actor observations),
+> survives `--resume`, and is what the authorization and parameter-mutation
+> workflows query. "Feed it back into the inventory" below means these tools.
+> Bulk-load a crawl with `ingest_recon_endpoints(records=<cat crawl/host.jsonl>,
+> source_format="katana")`; record a single manually-observed request with
+> `record_endpoint`. Always pass the `actor_ref`/`auth_state` of the pass that
+> made the observation so an anonymous crawl and an authenticated one stay
+> distinct per endpoint.
+>
+> **Preferred path — `run_crawl_job`:** rather than crawl by hand and then
+> `cat`/paste the output, call `run_crawl_job(origins=<authorized origin(s)>,
+> actor_ref="anonymous")`. It runs `katana` in the sandbox (bounded depth/
+> pages/duration, scope-restricted to the origins you pass), streams the
+> artifact back, and ingests it straight into the inventory — no pasting. Add
+> `js_crawl=true` for a bounded headless pass that captures JS/XHR-discovered
+> endpoints. **Scope caveat:** the *static* crawl enforces scope at the request
+> level (redirects disabled, so an out-of-scope origin receives no request from
+> it); the *headless* (`js_crawl`) pass cannot — a browser fetches whatever a
+> page triggers to any origin, so there scope is only crawl-follow + ingestion
+> filtering (out-of-scope endpoints are dropped from the inventory but the
+> origin may still have received a browser request). The job's
+> `scope_enforcement` field states which applies. Run it once per
+> actor (anonymous here; authenticated passes are driven from
+> `account_provisioning.md` after sessions exist). The manual
+> `katana`→`ingest_recon_endpoints` path and single `record_endpoint` calls
+> remain fully supported for anything the executor can't reach (a request you
+> drove in `agent_browser`, a proxy capture). Check `list_crawl_jobs` for a
+> job's status, ingestion counts, and remaining work.
 
 Most engagements start from a small seed (one domain, one org name) but the real attack surface is far larger: forgotten hosts, staging/internal-named services, acquisitions, and infrastructure that never appears in a wordlist. Build a broad, deduplicated inventory using passive intelligence — certificate transparency, TLS certificate metadata, passive DNS, and ASN/IP data — then collapse it into a probed, classified attack surface. The aim is coverage and pivoting: every certificate, DNS record, and IP is a lead to more assets.
 
@@ -177,6 +210,7 @@ Consolidation hands you a live, classified host. Don't stop there — for every 
 
 This is where the disproportionate value is on modern JS-heavy targets (Next.js/React/Angular) — a room101-class lead (a `developmentCode` OTP leak, hardcoded credentials) comes from this step, not from running the same scanners every other tool runs. Crawl first, then treat the deep dive below as mandatory, not optional polish.
 
+- **Fastest path:** `run_crawl_job(origins="https://host.tld", actor_ref="anonymous")` runs the bounded katana crawl in the sandbox and ingests straight into the attack-surface inventory (add `js_crawl=true` for the headless/XHR pass). Prefer it for the anonymous sweep; it removes the crawl→`cat`→ingest round-trip and keeps the result scoped to the origins you authorize. The explicit `katana` commands below stay available for tuning (extra flags, a thin-output second pass) and for the manual `ingest_recon_endpoints` path.
 - Crawl each host with `katana`, JS-aware: `katana -u https://host.tld -d 3 -jc -jsl -kf all -ct 10m -fsu -c 10 -p 10 -rl 50 -j -o crawl/host.jsonl` (see `tooling/katana.md`).
 - Run `gospider -s https://host.tld -d 3 -c 10 -t 20` as a second pass on hosts where katana output looks thin.
 - `~/tools/JS-Snooper/js_snooper.sh` and `~/tools/jsniper.sh/jsniper.sh` automate a first-pass sweep per domain — treat their output as a starting inventory, not the finish line.
@@ -331,7 +365,7 @@ A secret is only reported once verified live or clearly valid (per `analysis/cou
 
 - On endpoints that look dynamic or DB-backed (query strings, form posts, REST resource paths), run `arjun -u <url>` (GET) and `arjun -u <url> -m POST` to surface parameters absent from the crawl.
 - This is a recon step, not just an IDOR trick — hidden parameters (`debug`, `role`, `format`, `redirect`, `filter`) reshape an endpoint's whole attack surface before any specific vuln class is tested.
-- Feed every discovered parameter back into the endpoint inventory with its source (crawl, JS, or `arjun`).
+- Feed every discovered parameter back into the attack-surface inventory with its source and location — `record_endpoint(url=..., method=..., parameters='[{"name":"role","location":"query"}]', discovery_source="arjun")` merges the parameter onto the existing endpoint rather than creating a duplicate.
 
 ### 5. Prioritization — Attack Queue
 
@@ -346,7 +380,7 @@ Within a tier, boost hosts with a newly-issued cert or CT diff (from the passive
 
 ### Coverage Discipline
 
-Every crawled endpoint, extracted JS route, and discovered parameter not actually exploited in this pass is a candidate, not a dead end. Record it with `record_coverage(outcome="needs_follow_up")` as an `open_proof_gap` (see `analysis/counterevidence.md`) instead of letting it silently drop when crawl output is large. A big inventory with no follow-up trail is exactly how real endpoints get missed.
+Every crawled endpoint, extracted JS route, and discovered parameter not actually exploited in this pass is a candidate, not a dead end. Record the endpoint in the attack-surface inventory (`record_endpoint` / `ingest_recon_endpoints`) so it survives into later waves and resume, and record the *risk-area* judgement with `record_coverage(outcome="needs_follow_up")` as an `open_proof_gap` (see `analysis/counterevidence.md`) instead of letting it silently drop when crawl output is large. The two are complementary: the inventory holds the endpoint's shape, coverage holds what was (not) assessed. A big inventory with no follow-up trail is exactly how real endpoints get missed.
 
 ## Layer 4 — Tech-Matched Nuclei Fingerprinting
 

@@ -262,8 +262,11 @@ async def run_strix_scan(
         coordinator = AgentCoordinator()
     coordinator.set_snapshot_path(agents_path)
 
+    from strix.tools.attack_surface.tools import hydrate_attack_surface_from_disk
     from strix.tools.coverage.tools import hydrate_coverage_from_disk
+    from strix.tools.crawl_executor.tools import hydrate_crawl_jobs_from_disk
     from strix.tools.file_context_cache.tools import hydrate_file_context_cache_from_disk
+    from strix.tools.hypotheses.tools import hydrate_hypotheses_from_disk
     from strix.tools.negative_knowledge.tools import hydrate_negative_knowledge_from_disk
     from strix.tools.notes.tools import hydrate_notes_from_disk
     from strix.tools.threat_model.tools import hydrate_threat_models_from_disk
@@ -273,6 +276,15 @@ async def run_strix_scan(
     hydrate_notes_from_disk(state_dir)
     hydrate_coverage_from_disk(state_dir)
     hydrate_threat_models_from_disk(state_dir)
+    # Run-scoped like coverage: empty on a fresh run, restored (with each
+    # endpoint's original timestamps and provenance) on --resume of this run.
+    hydrate_attack_surface_from_disk(state_dir)
+    # Durable crawl-job history, run-scoped like the inventory above. On resume,
+    # authenticated jobs are flagged for session revalidation (see the tool).
+    hydrate_crawl_jobs_from_disk(state_dir)
+    # Evidence-backed hypothesis worklist, run-scoped like the inventory above.
+    # On resume, prior request-evidence resolutions are flagged stale (see tool).
+    hydrate_hypotheses_from_disk(state_dir)
     # Scoped to this run's own state_dir, unlike negative_knowledge's fixed
     # cross-scan path — see strix/tools/file_context_cache/tools.py.
     hydrate_file_context_cache_from_disk(state_dir)

@@ -7,6 +7,8 @@ description: XSS testing covering reflected, stored, DOM-based, mutation, and bl
 
 Cross-site scripting persists because context, parser, and framework edges are complex. Treat every user-influenced string as untrusted until it is strictly encoded for the exact sink and guarded by runtime policy (CSP/Trusted Types).
 
+**Driven from the hypothesis worklist.** Take your candidates from `query_hypotheses(pending_only=true, vuln_category="xss")` — each hypothesis names the endpoint, resource, actor, and the reflected/stored parameter plus why it looks injectable. Record each test with `record_test_attempt(hypothesis_id=..., tool="dalfox"|"manual", tool_rationale="value reflects unencoded into an HTML attribute", outcome=..., result_status=..., validation_required=...)`; don't fire a payload cannon just because a param is named `search`/`q`. A reflection or a fired alert in a lab is `needs_validation` — confirm only with a working PoC in the real context, then `update_hypothesis(status="confirmed", confirmation=...)`. For blind/stored XSS attach the capture/callback reference as evidence so the replay is resolved rather than assumed; if no replayable request exists, the worklist will say so — capture one.
+
 ## Attack Surface
 
 **Types**

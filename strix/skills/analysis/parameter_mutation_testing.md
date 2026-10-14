@@ -391,11 +391,17 @@ map is a **separate** artifact: `/workspace/recon/mutation_candidates.md`,
 following the same reuse-don't-rederive convention `asset_discovery.md`
 already established for everything else under `/workspace/recon/`.
 
-- Built from whatever endpoint inventory the scan already has: recon's
-  crawled/enumerated endpoint list in black-box mode, cross-referenced
-  against `entry_points.md`'s route/handler rows when white-box source is
-  also available (a whitebox scan gets the richer of the two, never a
-  third redundant list).
+- Built from whatever endpoint inventory the scan already has: in
+  black-box mode, query the structured **attack-surface inventory** with
+  `query_attack_surface` rather than re-parsing crawl text — group its
+  returned endpoints into families by `(origin, method, normalized path
+  with its `{id}` positions)`, and read each endpoint's `parameters`
+  (names + locations) and per-actor `observations` straight off the
+  result. Cross-reference against `entry_points.md`'s route/handler rows
+  when white-box source is also available (a whitebox scan gets the richer
+  of the two, never a third redundant list). The inventory is the durable,
+  resume-surviving source; `mutation_candidates.md` remains the per-family
+  *worklist ledger* layered on top of it.
 - One row per family: family key, member endpoints, kind, open
   mutation candidates (which T/X pairs are untested vs already run, and
   their last `signal_class`), and `actor_replay_status`
