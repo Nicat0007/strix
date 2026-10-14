@@ -334,6 +334,32 @@ own catalog and feeds it into Layer A as the T/X value source:
   values for the white-box QA reading, when a live target exists to
   dynamically confirm a candidate found by reading code
 
+## Mutation Strategies by Parameter Type
+
+A dispatch index, not a new generator: read a discovered parameter's
+*observable shape* and it tells you the starting adversarial set (the Layer A
+**X** value) and the owning class skill that carries the full catalog. Pick by
+shape and file a hypothesis naming *why* before firing — do not payload-cannon
+every value at every parameter. The three-way set (Control / Boundary / X) and
+`signal_class` reading still apply to each value; a hit is a lead, not a finding.
+
+| Parameter shape (examples) | Starting adversarial set (X) | Likely class → owning skill |
+|---|---|---|
+| numeric id — `?id=123`, `/doc/123`, `ref=1041` | `122`, `124`, `0`, `-1`, `null`, `999999`, **another principal's real id** | IDOR/BOLA → `idor.md` (use Actor Replay — identical 2xx body for a non-owner is the signal, not "unchanged") |
+| free-text search/filter — `?search=`, `?q=`, `?filter=`, `?axtaris=` | `' OR 1=1-- -`, a time-based probe (`';WAITFOR DELAY`/`SLEEP`), `<script>alert(1)</script>` / context-break, `../../../etc/passwd` | SQLi / XSS / LFI → `sql_injection.md`, `xss.md`, `path_traversal_lfi_rfi.md` (hand-written SQL is common on the gov.az class) |
+| filename/path — `?file=report.pdf`, `?path=`, `?template=`, `?yukle=` | `../../../etc/passwd`, `/etc/passwd`, `....//....//`, URL/double-URL-encoded variants, null-byte, `file:///etc/passwd` | LFI/traversal → `path_traversal_lfi_rfi.md`; if it fetches a URL → SSRF (`ssrf.md`) |
+| locale/enum/thin control — `?lang=az`, `?theme=`, `?view=` | `az/../admin`, `../../`, `null`, an out-of-set value, a second value via parameter pollution | traversal / validation / forced-browse → `path_traversal_lfi_rfi.md` (and note a role/debug control param → `mass_assignment.md`) |
+| boolean/role/flag — `?admin=false`, `is_admin=`, `?debug=`, `role=` | flip to `true`/`1`, remove it, **add it if absent** | mass assignment / privilege → `mass_assignment.md`, `broken_function_level_authorization.md` |
+
+**PII-bearing field names raise the severity of any hit here.** A field whose
+*name* carries citizen PII — `ad`, `soyad`, `ata_adi`, `seriya`, `fin_kod`,
+`dogum_tarixi`, `unvan`, `telefon` (the Azerbaijani set; see
+`custom/gov_az_mental_model.md` for the full vocabulary) — turns an IDOR, mass
+assignment, or injection that reaches it into a **high-severity** finding per
+`analysis/severity_calibration.md`, not a routine one. `fin_kod`/`id`-shaped
+fields are also *enumeration primitives*: a sequential or guessable value there
+is itself the IDOR candidate.
+
 ## Family Sweep
 
 Running the three-way set per-endpoint is correct but wasteful when many

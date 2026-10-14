@@ -167,6 +167,7 @@ For ASN-owned ranges, sweep IPs directly with `naabu`/`httpx` and read served ce
    - Login/admin panels with default or weak creds → `weak_password_detection`
    - Dangling DNS / unclaimed provider resources → `subdomain_takeover`
    - Cloud consoles/metadata surfaces → `aws` / `gcp` / `kubernetes`
+   - **Target class:** a `*.gov.az` host — or any Azerbaijani-language public-sector portal on a bespoke/local CMS — → `load_skill(["gov_az_mental_model"])` for the target-class priors (exposed panels, default/weak creds, sequential IDOR on citizen data, local-CMS flaws) and the Azerbaijani entry-point keyword map (`axtarış`/`yüklə`/`admin`/`müraciət`/…) *before* hunting, so the hypothesis worklist starts from informed bets.
 
 ### Layer 2 Output — `assets.jsonl` (one record per *origin*)
 
@@ -377,6 +378,8 @@ Turn the flat endpoint/host inventory into an ordered queue, not a routing table
 4. **Static/marketing content** - lowest priority; worth only a pass for information disclosure.
 
 Within a tier, boost hosts with a newly-issued cert or CT diff (from the passive phase) and hosts whose probe response (title/tech/status) changed since the last pass — fresh or actively-deployed code is more likely to carry undiscovered bugs. Hand exploitation agents this ranked list, not the flat classified-host list from Consolidation & Probing step 3.
+
+For a recognized target class, let its own entry-point scoring drive the queue: on a `*.gov.az` target, score each endpoint by the `gov_az_mental_model` keyword table (`axtarış`/`yüklə`/`admin`/`idareetme`/`müraciət`/`sənəd`/`nəticə` → **P0**; `hesabat`/`kabinet`/`xidmət`/`giriş` → **P1**) and front-load the P0s, rather than relying on the generic tiers alone.
 
 ### Coverage Discipline
 

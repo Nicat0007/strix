@@ -35,6 +35,20 @@ Accept a scope definition when one is provided — via `--instruction` or a `/wo
 
 **No scope provided.** Behave as a single-target engagement, same as today — but say so explicitly in the final report ("testing was limited to `<target>`; no broader scope was supplied") so the reader knows the boundary was the default, not a deliberate exclusion.
 
+### Target-Class Priors — Check First
+
+Recognizing the *class* of target is the first analytical step, before any
+tool runs — the domain alone often tells you. When the target is a `*.gov.az`
+host (or any Azerbaijani-language public-sector portal on a bespoke/local CMS),
+`load_skill(["gov_az_mental_model"])` immediately and treat its four high-yield
+patterns (exposed panels, default creds, sequential-integer IDOR on citizen
+data, old/custom CMS with known CVEs) and its P0 entry-point keywords
+(`axtarış`/`yüklə`/`admin`/`idareetme`/`müraciət`/…) as the **first hypotheses
+you file** in the phase below — not an afterthought once generic scanning turns
+up nothing. The same "name the target class, then start from its known-weak
+spots" discipline applies to any recognizable platform (a specific CMS, a SaaS
+product); gov.az is the one this run is tuned for.
+
 ## Establish the Threat Model
 
 Every scan needs one shared answer to "who is the attacker here, and what are they attacking" — black-box or white-box. Without it, five agents derive five different answers and their findings cannot be reconciled. Call `get_threat_model` on the target (a host, a URL, or a repository path) before you spawn hunters; if no model exists yet, derive one and share it with `save_threat_model`. It lives for this scan only — nothing carries over from an earlier run, so every scan derives its own — but within the run every agent reads the same document, and a model written from source is read back by an agent testing the deployment.
@@ -44,6 +58,46 @@ Every scan needs one shared answer to "who is the attacker here, and what are th
 **Black-box, the ordering inverts.** You cannot model a target you have not seen, so recon comes first: spawn reconnaissance, and write the model from what it found — the hosts and ports that answered, the technology fingerprints, the authentication and session model, the roles and tenants you can distinguish, the endpoints and parameters enumerated. Then spawn the hunters against that model. Do not stall the scan waiting for a perfect picture and do not skip the step because the picture is partial: mark what is inferred rather than observed and let it be corrected. A black-box model that says "admin panel at `/admin` appears to be IP-restricted — unverified" is worth far more than no model, because it tells the next agent exactly what to go check.
 
 Either way you write it with the least information anyone on this scan will ever have, so expect it to be wrong somewhere. Subagents correct it with `amend_threat_model`, which appends an attributed addendum instead of overwriting — expect many of these on a black-box run, as authenticating, pivoting between roles, and reaching internal surfaces is exactly what turns inference into fact. Read the amendments back before you write the final report: an agent telling you a boundary you called trusted is attacker-reachable is a finding about your model, not a note. Only call `save_threat_model` again to fold accumulated amendments into the body; it replaces the document and clears them.
+
+## Form Hypotheses Before Hunting
+
+Hunting is **hypothesis-first, not tool-first.** Running every scanner against
+every endpoint and hoping something trips is slow and buries real bugs in
+noise. Once Layer 1–2 recon has fingerprinted the stack and the threat model is
+written, translate that fingerprint into a short list of **explicit, ranked
+bug-class hypotheses** — then direct hunters at *those specific hypotheses*,
+not at generic scanning. File each one with `create_hypothesis` (endpoint +
+resource + the class + *why the stack makes it likely*) so it becomes shared,
+resumable worklist, and so a hunter pulls its mandate with
+`query_hypotheses(pending_only=true, vuln_category=...)` instead of re-deciding
+what to test.
+
+Translate the fingerprint into likely classes — a few worked examples, not an
+exhaustive table:
+
+- Old client-side library (e.g. **jQuery < 3.x**, outdated Angular) → DOM / stored
+  XSS in user-input fields (`xss.md`).
+- Hand-written SQL / old PHP, no ORM → **SQLi in search and filter params**
+  (`sql_injection.md`) — the highest-yield injection surface on the gov.az class.
+- A versioned **WordPress/Joomla/known CMS** → check that version against public
+  CVEs *first* (`frameworks/wordpress.md`, `custom/dependency_cve_scanning.md`)
+  before blind fuzzing.
+- Sequential-integer document/application reference numbers → **IDOR/BOLA**
+  (`idor.md`), the first thing to try on any citizen-data endpoint.
+- A file-upload handler → unrestricted-upload RCE / traversal (`hunt-file-upload`,
+  `path_traversal_lfi_rfi.md`).
+- A reachable admin panel → default/weak creds, auth bypass
+  (`weak_password_detection.md`, `broken_function_level_authorization.md`).
+
+For a `*.gov.az` target, the `gov_az_mental_model` four patterns and the P0
+entry-point keyword scores *are* this starting hypothesis set — file them first.
+
+A hypothesis is a prioritized **bet to test**, never a finding: it still passes
+`analysis/counterevidence.md`'s gate and no tool call auto-confirms it (the
+worklist enforces this). A bet that doesn't pan out is recorded `ruled_out`
+with its counterevidence, and the endpoint stays in the attack-surface
+inventory for a different class — hypothesis-first narrows *where you look
+first*, it does not shrink the surface you're accountable for.
 
 ## Provision Accounts Before Hunting
 
@@ -190,7 +244,30 @@ duplicated work. Group naturally related classes into one agent's mandate:
 authentication + JWT + BFLA together, IDOR + business logic together,
 injection classes (SQLi/XSS/SSTI/command) together for a given surface.
 Split further only when one class is large enough on its own (e.g. a
-sprawling GraphQL API) to justify a dedicated agent.
+sprawling GraphQL API) to justify a dedicated agent. For a mapped black-box
+surface, this principle *is* entry-point-slice delegation (next): the
+"related classes" an agent consolidates are all the classes relevant to its
+3–5 assigned endpoints.
+
+**Delegate by Entry-Point Slice (mapped black-box surface)**
+
+Once recon has produced the attack-surface inventory and attack queue, the
+default black-box partition is **by entry-point slice, not by vulnerability
+class**: hand each hunter a specific set of 3–5 related endpoints (grouped by
+surface/family, highest-priority first — P0 before P1) with the mandate "find
+anything exploitable here." The agent reads each endpoint, works out its
+purpose — a search form, a file download, a user profile, an admin action — and
+chooses the attack approach itself, guided by the endpoint-keyword→class map
+(`custom/gov_az_mental_model.md` for gov.az), `analysis/parameter_mutation_testing.md`,
+and whichever vuln skills it loads for that surface. It records progress per
+endpoint with `record_endpoint_test`. This is the black-box twin of
+`coordination/source_aware_whitebox.md`'s entry-point-slice partition. Keep
+slices small (3–5 endpoints) so each agent's context stays focused and coverage
+is auditable per endpoint, not per vague "injection pass."
+
+Cross-cutting concerns that aren't endpoint-local — the auth/session model,
+infrastructure, subdomain takeover, a single sprawling API — still get their
+own dedicated agent rather than being forced into a slice.
 
 **Bound Parallelism**
 
