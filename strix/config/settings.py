@@ -12,6 +12,16 @@ ReasoningEffort = Literal["none", "minimal", "low", "medium", "high", "xhigh", "
 
 DEFAULT_MAX_TURNS = 500
 
+#: Target-domain -> skill to auto-load. When an authorized target's host matches
+#: a pattern here, the skill is injected into the root agent's skill set at scan
+#: start, deterministically (independent of model behaviour) and only if the
+#: skill file actually exists. ``"*.suffix"`` matches that suffix and any
+#: subdomain of it; a bare host matches exactly. Add a target-class skill with
+#: one line.
+DOMAIN_SKILL_MAP: dict[str, str] = {
+    "*.gov.az": "gov_az_mental_model",
+}
+
 _BASE_CONFIG = SettingsConfigDict(
     case_sensitive=False,
     populate_by_name=True,

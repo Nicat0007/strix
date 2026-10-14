@@ -8,13 +8,16 @@ from typing import Any
 import litellm
 import pytest
 
+from strix.agents.prompt import _resolve_skills
 from strix.core.inputs import (
     build_root_task,
     build_scan_targets,
     build_scope_context,
     child_initial_input,
+    domain_matched_skills,
     make_model_settings,
 )
+from strix.skills import get_all_skill_names
 
 
 def _child_kwargs(parent_history: list[Any]) -> dict[str, Any]:
@@ -431,3 +434,24 @@ def test_user_headers_override_openrouter_attribution() -> None:
     assert headers["X-Title"] == "Custom"
     assert headers["X-Tenant"] == "acme"
     assert headers["HTTP-Referer"] == "https://strix.ai"
+
+
+def _web_cfg(url: str) -> dict[str, Any]:
+    return {"targets": [{"type": "web_application", "details": {"target_url": url}}]}
+
+
+def test_gov_az_target_auto_loads_the_mental_model_skill() -> None:
+    matched = domain_matched_skills(_web_cfg("https://example.gov.az/something"))
+    assert "gov_az_mental_model" in matched
+    # the deterministic injection is real: the skill file exists, so it loads
+    assert "gov_az_mental_model" in get_all_skill_names()
+    # and it flows into the root agent's resolved skill set
+    resolved = _resolve_skills(requested=matched, is_root=True)
+    assert "gov_az_mental_model" in resolved
+
+
+def test_non_gov_az_target_does_not_load_the_mental_model_skill() -> None:
+    matched = domain_matched_skills(_web_cfg("https://example.com"))
+    assert "gov_az_mental_model" not in matched
+    resolved = _resolve_skills(requested=matched, is_root=True)
+    assert "gov_az_mental_model" not in resolved

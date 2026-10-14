@@ -3454,14 +3454,20 @@ and §24 Piece 7 / §10 already established that `frameworks/*` and `custom/*`
 skills have *no* code-level auto-detection — they load only by root-agent
 judgment via `skills=`/`load_skill`). Concretely, for a `*.gov.az` run
 tomorrow:
-- **gov.az auto-load on domain detection:** *prompt-wired, not code-wired.*
-  No Python inspects the TLD; `root_agent.md` (always in the root agent's
-  context) and `asset_discovery.md` (in recon agents' context) *instruct* the
-  agent to `load_skill(["gov_az_mental_model"])` on a `*.gov.az` target. It
-  happens iff the model follows the instruction. A deterministic auto-load
-  would need a small code hook (e.g. in `_resolve_skills` or a target/domain
-  check in `runner`/`factory`) — not built, flagged as the one thing that
-  would make it guaranteed rather than likely.
+- **gov.az auto-load on domain detection:** *now code-wired and deterministic*
+  (the one hook that was built; the other two below remain prompt-level). A
+  `DOMAIN_SKILL_MAP` constant in `strix/config/settings.py`
+  (`{"*.gov.az": "gov_az_mental_model"}`, one line per future target-class
+  skill) drives `domain_matched_skills()` in `strix/core/inputs.py`, which
+  `run_strix_scan()` calls to extend the root agent's `skills` list **before**
+  `build_strix_agent` — so a `*.gov.az` host (suffix, any subdomain, or bare
+  `gov.az`) loads the skill into the root prompt regardless of model behaviour,
+  guarded by `load_skills` (missing skill → warning, no crash). The
+  `root_agent.md`/`asset_discovery.md` `load_skill` instructions still exist and
+  now reinforce, rather than solely carry, the load — and they remain the
+  mechanism that pushes the skill down to child hunters (the hook injects into
+  the root agent only). Regression tests:
+  `tests/test_inputs.py::test_{gov_az_target_auto_loads,non_gov_az_target_does_not_load}_the_mental_model_skill`.
 - **P0 scoring of `/axtaris`,`/muraciet` before hunting:** *prompt-level
   methodology.* The recon agent applies the gov.az keyword table when building
   the attack queue; there is no structured P-score field in the
@@ -3473,9 +3479,11 @@ tomorrow:
   the *do-it-before-dispatch* ordering is the new prompt phase, again
   model-honored, not code-gated. This is the most end-to-end of the three.
 
-So: nothing is a hard-coded guarantee; all three are instructions a capable
-model will usually follow. If deterministic certainty is wanted (esp. the
-gov.az auto-load), that is a follow-up Python hook, offered but not built.
+So: the gov.az auto-load is now a hard-coded guarantee (the `DOMAIN_SKILL_MAP`
+hook above); the other two (P0 scoring before hunting, hypothesis-before-dispatch
+ordering) remain prompt-level instructions a capable model will usually follow,
+not code gates — acceptable, since the first was the one worth making
+deterministic and the latter two would need to constrain the agent loop itself.
 
 **Committed** `77d2252` (the 4 skill files; one cohesive commit — they
 interlock: the hypothesis phase references the gov.az scoring, delegation

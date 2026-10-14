@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
 from agents.model_settings import ModelSettings
 from openai.types.shared import Reasoning
@@ -20,6 +21,7 @@ from strix.config.models import (
     request_timeout_extra_args,
     routes_through_litellm,
 )
+from strix.config.settings import DOMAIN_SKILL_MAP
 from strix.core.sessions import scrub_images_from_items
 
 
@@ -260,6 +262,37 @@ def build_scan_targets(scan_config: dict[str, Any]) -> list[str]:
         if value and value not in targets:
             targets.append(value)
     return targets
+
+
+def _host_of(value: str) -> str:
+    """Lowercased host of a target value (URL or bare host), '' if none."""
+    v = (value or "").strip()
+    if not v:
+        return ""
+    if "://" not in v:
+        v = "//" + v  # let urlsplit treat a bare host[:port]/path as netloc
+    return (urlsplit(v).hostname or "").lower()
+
+
+def _host_matches(host: str, pattern: str) -> bool:
+    pattern = pattern.lower()
+    if pattern.startswith("*."):
+        suffix = pattern[2:]
+        return host == suffix or host.endswith("." + suffix)
+    return host == pattern
+
+
+def domain_matched_skills(scan_config: dict[str, Any]) -> list[str]:
+    """Skills auto-loaded because an authorized target's host matches
+    ``DOMAIN_SKILL_MAP`` (``strix/config/settings.py``). Deterministic and
+    independent of model behaviour. Existence is not checked here — ``load_skills``
+    drops an unknown name with a warning rather than crashing."""
+    hosts = [_host_of(t["value"]) for t in build_scope_context(scan_config)["authorized_targets"]]
+    matched: list[str] = []
+    for pattern, skill in DOMAIN_SKILL_MAP.items():
+        if skill not in matched and any(h and _host_matches(h, pattern) for h in hosts):
+            matched.append(skill)
+    return matched
 
 
 def make_model_settings(

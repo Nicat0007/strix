@@ -39,6 +39,7 @@ from strix.core.inputs import (
     build_root_task,
     build_scan_targets,
     build_scope_context,
+    domain_matched_skills,
     is_whitebox_targets,
     make_model_settings,
 )
@@ -371,6 +372,10 @@ async def run_strix_scan(
         diff_scope = scan_config.get("diff_scope")
         is_diff_scoped = bool(isinstance(diff_scope, dict) and diff_scope.get("active"))
         skills = list(scan_config.get("skills") or [])
+        # Deterministic, model-independent target-class skill auto-load: if an
+        # authorized target's host matches DOMAIN_SKILL_MAP (e.g. *.gov.az), its
+        # skill is injected into the root agent's set here, before it is built.
+        skills.extend(s for s in domain_matched_skills(scan_config) if s not in skills)
         root_task = build_root_task(scan_config)
         model_settings = make_model_settings(
             settings.llm.reasoning_effort,
