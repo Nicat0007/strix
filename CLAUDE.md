@@ -3368,3 +3368,119 @@ into a dataclass without changing the contract (same reason
 deliberate reuse of #1's ingestion adapters / redactor by #2-#4 rather than
 duplicating them. Two test files carry fake-transport/injectable-app
 ignores. All documented inline in `pyproject.toml`.
+
+## 30. BLACK-BOX INTELLIGENCE — GOV.AZ MENTAL MODEL + HYPOTHESIS-FIRST +
+    ENTRY-POINT SLICING (5 IMPROVEMENTS, SKILL-ONLY, COMMITTED)
+
+Goal restated by the user: one domain in → a complete, intelligent black-box
+pentest → real bugs. Make the pipeline **smarter, not more tools.** Five
+interlocking skill-level changes (no Python, no Dockerfile, effective next
+`strix` run), committed together as `77d2252`; this write-up as the follow-up
+commit. All build on the §29 executor tools (`attack_surface`, `hypotheses`,
+`crawl_executor`, `sqli_executor`) rather than adding new machinery.
+
+**The five (as the user numbered them):**
+
+1. **Hypothesis-first, not tool-first** — `coordination/root_agent.md` new
+   `## Form Hypotheses Before Hunting` phase (after the threat model, before
+   provisioning/hunting waves). After Layer 1–2 fingerprints the stack, the
+   root agent translates the fingerprint into explicit, ranked bug-class
+   hypotheses with `create_hypothesis` (§29's tool) and points hunters at
+   those via `query_hypotheses(pending_only=true, vuln_category=...)` instead
+   of generic scanning. Worked tech→class examples (jQuery<3→XSS; hand-written
+   SQL/old PHP→SQLi in search/filter; versioned WP/Joomla→CVE-check first;
+   sequential-int refs→IDOR; upload handler→upload RCE; admin panel→default
+   creds). Discipline: a hypothesis is a *bet to test*, never a finding —
+   `counterevidence.md` still gates, no tool auto-confirms, a dud is
+   `ruled_out` and the endpoint stays in the inventory for another class.
+2. **Gov.az mental model** — new `custom/gov_az_mental_model.md` (the file;
+   ~175 lines) + `root_agent.md` `### Target-Class Priors — Check First`
+   (recognize `*.gov.az` up front, `load_skill` the model before any tool
+   runs, its four patterns are the first hypotheses) + the
+   `asset_discovery.md` routing-list load trigger. The skill carries: the
+   archetype priors matching the user's exact list (local-contractor build,
+   bespoke/old/custom-Azerbaijani CMS or WP/Joomla → **CVE-check the version
+   first**, exposed `/admin`+`/idareetme` with unrotated default creds,
+   hand-written SQL in search/filter, sequential-integer IDOR on citizen
+   reference numbers, upload-without-validation, debug/backup artifacts, weak
+   OTP/`FIN` identity); the four high-yield patterns; shared-codebase
+   pivoting; and a hard **PII / authorized-scope guardrail** (prove IDOR with
+   *one redacted* other-subject record, never range-walk real citizen PII;
+   out-of-scope `*.gov.az` siblings → `not_applicable`).
+3. **Smarter parameter mutation** — `analysis/parameter_mutation_testing.md`
+   new `## Mutation Strategies by Parameter Type`: a shape→adversarial-set
+   **dispatch index** (numeric id → `122/124/0/-1/null/999999`+other-principal
+   id; search/filter → `' OR 1=1-- -`/time-probe/`<script>`/traversal;
+   file/path → `../../../etc/passwd`/encodings/`file://`; locale/enum →
+   `az/../admin`/`../../`/null; bool/role flag → flip/remove/add), each mapped
+   to the owning class skill — framed as an index on top of the existing
+   "Class-Specific Generators Stay Put", not a new generator. Plus the
+   **Azerbaijani PII field vocabulary** (`ad`/`soyad`/`ata_adi`/`seriya`/
+   `fin_kod`/`dogum_tarixi`/`unvan`/`telefon`): a hit reaching a PII field is
+   **high severity** per `severity_calibration.md`; `fin_kod`/id-shaped fields
+   are also enumeration primitives.
+4. **Entry-point scoring for gov.az** — the keyword map in the gov.az skill is
+   a scored table (`axtarış`/`yüklə`/`admin`/`idareetme`/`müraciət`/`sənəd`/
+   `nəticə` → **P0**; `hesabat`/`kabinet`/`xidmət`/`giriş` → **P1**), and
+   `asset_discovery.md`'s Attack Queue step says to front-load the P0s by that
+   table on a gov.az target. The P-score feeds `analysis/candidate_triage.md`
+   as a target-class prior, not a replacement for its categorical rubric.
+5. **Entry-point-slice delegation** — `root_agent.md` new
+   `**Delegate by Entry-Point Slice (mapped black-box surface)**`: the default
+   black-box partition is 3–5 related endpoints per agent ("find anything
+   exploitable here"), the agent reads each endpoint's purpose and chooses the
+   attack itself, recording per-endpoint progress with `record_endpoint_test`.
+   Reconciled with the existing "Consolidate Related Classes" (edited so they
+   don't contradict: slice = surface, one agent covers *all* classes for its
+   endpoints; cross-cutting concerns — auth/session model, infra, subdomain
+   takeover, a single sprawling API — still get a dedicated agent). It is the
+   black-box twin of `source_aware_whitebox.md`'s entry-point-slice partition.
+
+**Design calls:** #1 lives in `root_agent.md` (orchestration behavior), not a
+new skill — a reasoning discipline the root agent already owns, and a new file
+would be sprawl. #5 reconciles with, rather than replaces, "Consolidate
+Related Classes".
+
+**Verified:** all four files load (gov_az 10593 chars; `parameter_mutation_testing`
+30142; `root_agent` 22939 — the two internal-category skills only resolve by
+qualified name, the usual §11/§19 bare-name false alarm, confirmed by loading
+them qualified); fences balanced; no CRLF; the five new section markers all
+present in the loaded bodies; `tests/test_skill_dir_extension.py` 20/20
+unchanged.
+
+**IMPORTANT — these are skill-first (prompt-level), NOT code-enforced
+triggers.** This matches §1's philosophy (the intelligence lives in the `.md`,
+and §24 Piece 7 / §10 already established that `frameworks/*` and `custom/*`
+skills have *no* code-level auto-detection — they load only by root-agent
+judgment via `skills=`/`load_skill`). Concretely, for a `*.gov.az` run
+tomorrow:
+- **gov.az auto-load on domain detection:** *prompt-wired, not code-wired.*
+  No Python inspects the TLD; `root_agent.md` (always in the root agent's
+  context) and `asset_discovery.md` (in recon agents' context) *instruct* the
+  agent to `load_skill(["gov_az_mental_model"])` on a `*.gov.az` target. It
+  happens iff the model follows the instruction. A deterministic auto-load
+  would need a small code hook (e.g. in `_resolve_skills` or a target/domain
+  check in `runner`/`factory`) — not built, flagged as the one thing that
+  would make it guaranteed rather than likely.
+- **P0 scoring of `/axtaris`,`/muraciet` before hunting:** *prompt-level
+  methodology.* The recon agent applies the gov.az keyword table when building
+  the attack queue; there is no structured P-score field in the
+  `attack_surface` inventory tool and nothing enforces scoring-before-hunting
+  (an agent-honored ordering, like the recon layer gates). Real but
+  model-dependent.
+- **Form hypotheses before dispatch:** the *mechanism is real end-to-end* —
+  `create_hypothesis`/`query_hypotheses` are live `_BASE_TOOLS` from §29 — but
+  the *do-it-before-dispatch* ordering is the new prompt phase, again
+  model-honored, not code-gated. This is the most end-to-end of the three.
+
+So: nothing is a hard-coded guarantee; all three are instructions a capable
+model will usually follow. If deterministic certainty is wanted (esp. the
+gov.az auto-load), that is a follow-up Python hook, offered but not built.
+
+**Committed** `77d2252` (the 4 skill files; one cohesive commit — they
+interlock: the hypothesis phase references the gov.az scoring, delegation
+references both) + this §30 write-up as a separate commit; both pushed. Note:
+the first commit attempt fed `git commit -F -` a truncated message through a
+heredoc the Windows→WSL shell layer mangled on a `(` paren; caught it (the
+diff/content was always the correct 4 files), amended the message from a file
+before pushing — a tooling hiccup, not a content problem.
