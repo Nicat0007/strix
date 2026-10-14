@@ -3210,3 +3210,161 @@ target by N. The executor runs its own groups/passes sequentially, but nothing
 coordinates a cumulative cap across *separate* executor processes. Fix deferred
 (would need a shared token-bucket/lock or a single serialized Layer-4 driver).
 
+
+## 29. BLACK-BOX EXECUTOR TOOLS — INVENTORY / CRAWL / HYPOTHESIS /
+    SQLI (IMPROVEMENTS #1-#4, IMPLEMENTED, COMMITTED)
+
+New track (distinct from §27/§28's recon-pipeline *scripts*): turn the
+black-box recon/testing **skill-text conventions** (`assets.jsonl`,
+`mutation_candidates.md`, the per-vuln "pull your worklist" prose) into
+four real, deterministic **host-side tools** an agent calls, so the
+endpoint record is structured, shared across the whole agent tree, and
+survives `--resume` — instead of every agent re-parsing ephemeral
+`/workspace/recon/*` text. Numbered "BLACKBOX improvement #1-#4" in the
+module docstrings. Same discipline as §21-§26: no fake-precision score
+anywhere; secrets never stored or returned; a tool finding never
+auto-confirms a vulnerability (`analysis/counterevidence.md` still gates).
+
+**The four tools** (all in `strix/tools/<name>/tools.py`, registered in
+`strix/agents/factory.py`'s `_BASE_TOOLS`; the three stateful ones
+hydrated run-scoped in `strix/core/runner.py` next to coverage —
+`sqli_executor` is stateless, recording through #3):
+
+- **#1 `attack_surface`** — durable structured endpoint inventory,
+  mirrored to `{state_dir}/attack_surface_inventory.json` (run-scoped like
+  coverage: empty on a fresh run, restored on `--resume`). Tools:
+  `record_endpoint`, `ingest_recon_endpoints`, `query_attack_surface`,
+  `record_endpoint_test`. An **endpoint** is `(origin, method,
+  normalized_path)` — origin is `scheme://host:effective_port` (so
+  http/https/alt-port stay distinct, same rule as `assets.jsonl`), path is
+  the template (`/orders/1`→`/orders/{id}`). Evidence is kept **per
+  concrete object** (`/orders/1` vs `/orders/2`) so a cross-object or
+  cross-actor difference is never flattened; distinct resources per
+  endpoint are capped, past which ids fold into the template bucket and
+  the endpoint is flagged `resource_overflow` (coverage never implied).
+  Parameters stored as name+location only; **values never kept**. The raw
+  URL (userinfo/query values) is never stored — only sanitized origin +
+  resource path. `request_ref` is an *opaque* pointer (e.g. a Caido
+  request id) with a `recorded`→`verified`→`stale` replay lifecycle;
+  `verified` is downgraded to `stale` on resume (a prior process's
+  freshness can't carry over). Agent free text is secret-redacted; ingested
+  header values scrubbed. Katana ingestion verified against the schema the
+  pinned sandbox katana actually emits (flat per-request records incl. each
+  headless XHR; the nested `xhr_requests[]` shape tolerated only as a
+  fallback).
+- **#2 `crawl_executor`** — actor-aware katana crawl run **inside the
+  sandbox** over the existing session transport → deterministic ingestion
+  into #1 (reuses #1's `_ingest_katana`/`_record_impl` adapters, not a
+  duplicate). Tools: `run_crawl_job`, `list_crawl_jobs`. Honesty bounds
+  baked in: **never auto-logs-in** (`-al` deliberately unused — it uses a
+  session already provisioned per `account_provisioning.md`, read from
+  `auth_accounts.jsonl` by `principal`/`role`); a supplied credential is
+  not proof — an authenticated job runs an **application-specific marker
+  check** (present-marker must appear, absent-marker must not) before
+  crawling, and HTTP 200 alone is recorded `unknown`, never
+  `authenticated`; credentials written to a tight-perm sandbox headers
+  file passed **by file, never argv**, scrubbed after, never in output;
+  the crawler argv is structured (no shell string), bounded
+  depth/pages/duration with a hard exec timeout (a timeout yields a
+  *partial* job, not a lost one); only names/methods/statuses/content-types
+  are ingested, never a body, and the artifact is removed after ingestion.
+  **Scope caveat documented honestly:** the static crawl enforces scope at
+  the request level (redirects disabled); the headless (`js_crawl`) pass
+  **cannot** — a browser fetches whatever a page triggers, so there scope
+  is only crawl-follow + ingestion filtering (out-of-scope endpoints
+  dropped from the inventory, but the origin may still have received a
+  browser request). The job's `scope_enforcement` field states which
+  applies. Not a container firewall; adds no enforcement to other tools.
+- **#3 `hypotheses`** — evidence-backed, resumable worklist layered over
+  #1/#2. Tools: `create_hypothesis`, `update_hypothesis`,
+  `record_test_attempt`, `query_hypotheses`. Core discipline (from
+  `counterevidence.md`): **a tool finding alone never confirms** —
+  `record_test_attempt` can move a hypothesis to
+  testing/needs_validation/blocked/ruled_out but **not** to `confirmed`;
+  confirmation is a separate explicit `update_hypothesis` requiring a
+  validated-PoC note AND ≥1 evidence reference. A different resource,
+  actor, or param location is a *different* hypothesis, never merged.
+  Request refs are resolved through the existing proxy
+  (`proxy.caido_api.view_request`) before being treated as usable; a
+  missing/stale/unresolvable ref is recorded as such (never fabricated),
+  and a prior process's resolution is downgraded to stale on resume.
+  Hypothesis status is kept separate from #1's per-endpoint test
+  bookkeeping and from the coverage ledger. `vuln_category` validated
+  against `get_available_skills()["vulnerabilities"]`.
+- **#4 `sqli_executor`** — targeted, **detection-only** sqlmap driven by
+  one selected `sql_injection` hypothesis (explicitly per-hypothesis, not
+  an auto-scanner). Tool: `run_sqli_test`. Flow: retrieve the stored
+  request through the proxy (no traffic) → **validate origin+port+path
+  against operator scope (`build_scan_targets`) BEFORE any traffic** →
+  baseline-replay + classify auth state → if the baseline is blocked
+  (403/429/challenge/expired) classify from sanitized evidence and
+  recommend a justified, bounded continuation **instead of running
+  sqlmap** → else run sqlmap against exactly ONE location via a `*`
+  injection marker (not `-p` alone), `--ignore-redirects`,
+  `--ignore-stdin`, no dump/os-shell/file/crawl/escalation, bounded
+  time/concurrency/attempts, tamper restricted to a detection-only
+  allowlist → re-baseline (a mid-test session loss downgrades, never a
+  SQLi result) → scrub temp request/session/log artifacts → record the
+  attempt via #3. A positive is `needs_validation`, never `confirmed`; a
+  403→200 after a continuation is **not** a confirmed bypass. Flags/argv
+  were verified against the installed **sqlmap 1.8.4** (documented in the
+  module header): `--ignore-stdin` required or `-r` is ignored and sqlmap
+  blocks on STDIN; `--ignore-redirects` required (proven 0 vs 31
+  out-of-scope requests); the `*` marker isolates one location (proven: a
+  same-named cookie untouched); there is no request-count ceiling flag, so
+  the executor relies on enforced time/concurrency/attempt limits and does
+  **not** claim a request cap.
+
+**Skills wired to the tools** (skill-text only, pointing agents at the
+tools instead of free-text re-derivation): `reconnaissance/asset_discovery.md`
+(durable-inventory note + `run_crawl_job` as the preferred anonymous crawl
+path, arjun→`record_endpoint` parameter merge, coverage-vs-inventory
+split), `reconnaissance/account_provisioning.md` (one authenticated
+`run_crawl_job` per provisioned actor with the marker check, pass the actor
+*reference* never the token), `analysis/parameter_mutation_testing.md`
+(`query_attack_surface` as the durable family source;
+`mutation_candidates.md` stays the per-family worklist ledger on top),
+`coordination/root_agent.md` (the inventory is the cross-agent,
+resume-surviving endpoint record; re-check a restored `authenticated`
+observation's session before trusting it), and the per-vuln "driven from
+the hypothesis worklist" intros in `vulnerabilities/idor.md`,
+`broken_function_level_authorization.md`, `sql_injection.md` (incl. the
+`run_sqli_test` + blocked-not-negative guidance), `xss.md`.
+
+**Verified:** 107 new tests across 4 files (`test_attack_surface_inventory.py`
+35, `test_crawl_executor.py` 27, `test_hypotheses.py` 21,
+`test_sqli_executor.py` 24) — **106 passed, 1 skipped**; the executor tests
+use transport/provider fakes and a deliberately SQL-injectable disposable
+app (no real network/scanning). ruff clean on all eight tool/test files; all
+edited skill code-fences balanced; no TODO/stub markers. Full suite:
+**1413 passed, 2 skipped, 2 failed**. **Both failures are pre-existing and
+unrelated** — confirmed by stashing this track's tracked changes and
+re-running on clean HEAD: `test_pricing::test_resolves_common_bare_model_names`
+(the long-documented grok-4.5 litellm alias) and — **newly surfacing, not
+previously logged** — `test_cost_tracking::test_cost_callback_estimates_cost_with_provider_prefixed_model`.
+The second shares the *same* root cause as the first: both route through
+`resolve_litellm_model` / litellm's cost-map, which has drifted with a
+litellm version bump (the test patches `completion_cost` with a fake, so it
+is not a strix-logic regression — `resolve_litellm_model` no longer yields
+the exact provider-prefixed name the fake expects). Noted here so a future
+`git log`/suite reader knows the baseline is now **two** pre-existing
+litellm-drift failures, not one; neither is touched by this track and both
+are out of scope for the black-box work. Also reverted an accidental
+exec-bit flip (100755→100644) on `scripts/{build,docker,install}.sh`, a
+WSL-mount artifact unrelated to this work.
+
+**Committed** as `70dc35f` (the four tool packages + factory/runner wiring +
+`pyproject.toml` per-file ignores + the 8 skill files + 4 test files, one
+cohesive commit — the tools are tightly interdependent, so a partial commit
+would not be test-green on its own), with this CLAUDE.md §29 write-up as a
+separate follow-up commit (matching the §21-Piece-1 code/doc split). Not
+pushed yet.
+
+**pyproject.toml note:** the four tool files carry `PLR0917` (and #2-#4
+`SLF001`) per-file ignores because an SDK `function_tool`'s parameter list
+*is* its agent-facing JSON schema — the many optional fields cannot collapse
+into a dataclass without changing the contract (same reason
+`reporting/tool.py`'s `create_*_report` carries it); the `SLF001` is the
+deliberate reuse of #1's ingestion adapters / redactor by #2-#4 rather than
+duplicating them. Two test files carry fake-transport/injectable-app
+ignores. All documented inline in `pyproject.toml`.
