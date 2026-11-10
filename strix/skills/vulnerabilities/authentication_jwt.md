@@ -161,6 +161,26 @@ JWT/OIDC failures often enable token forgery, token confusion, cross-service acc
 - Use `jwt_tool` to mint a token under a key you control once you find an
   acceptance path (kid/jku/x5u/jwk), then replay via `repeat_request`.
 
+## JWE (Encrypted JWTs) and Block Handling
+
+JWS attacks (alg:none, RS256→HS256, kid/jku) do **not** cover JWE, whose own
+surface is routinely skipped. Confirm it's JWE first (5 dot-separated parts, an
+`enc` header), then:
+
+- **`alg: dir` / key-management confusion** — downgrade an `RSA-OAEP` token to
+  `dir`/`A128KW`, or force a weaker key-management alg, when the server honors the
+  header `alg` without pinning.
+- **RSA1_5 padding oracle (Bleichenbacher)** — if `alg: RSA1_5` decryption leaks a
+  padding-distinguishable error, recover the CEK and forge/decrypt tokens.
+- **Compression (`zip: DEF`) abuse** — oversized-payload DoS or a decompression
+  quirk; **weak/null CEK** — try a zero-length or all-zero key, and GCM
+  nonce/tag reuse.
+
+A `403` on a token-bearing endpoint is `blocked`, not `ruled_out` — move the token
+(header/cookie/body), re-encode, and see `vulnerabilities/waf_evasion.md`
+(`load_skill(["waf_evasion"])`) before concluding the forgery failed on server
+logic rather than the edge.
+
 ## Summary
 
 Verification must bind the token to the correct issuer, audience, key, and client context on every acceptance path. Any missing binding enables forgery or confusion.

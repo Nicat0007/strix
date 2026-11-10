@@ -306,6 +306,10 @@ something, and keep it hard-bounded even then.
 - Feed every candidate through `trufflehog filesystem <path> --results=verified` or `gitleaks detect --source <path>` (both already in the sandbox) for live-credential confirmation before treating anything as more than a lead
 - A client-side Firebase/Supabase/Stripe-publishable-style key isn't inherently a secret — confirm which key type you're looking at (check `technologies/firebase.md`/`technologies/supabase.md`) before assuming exposure; report confirmed secrets per `vulnerabilities/information_disclosure.md`'s triage rubric
 
+**Vulnerable client-side library detection**
+- The shipped JS also reveals *which* front-end libraries and versions run. Run `retire --js --jspath <crawled-js-dir> --outputformat json` (retire.js, already in the sandbox) over the downloaded bundles to flag libraries with known CVEs (jQuery, Angular, lodash, moment, DOMPurify, ...). This is a high-frequency, routinely-missed black-box finding class, because nobody reads minified version strings by eye — run it as a systematic pass, not a hope.
+- A flagged library is a **lead**: confirm the flagged version is the one actually loaded *and* that the vulnerable code path is reachable from this app (per `custom/component_research.md` → `create_vulnerability_report`, and `analysis/counterevidence.md`). A version banner alone is not exploitation; an outdated jQuery that never touches untrusted input is not a bug.
+
 **Feature-flag, debug-mode, and dev-artifact discovery**
 - Grep for flag-shaped identifiers: `isDebug`, `debugMode`, `testMode`, `devMode`, `staging`, `mock`, `bypassAuth`, `skipVerification`, `developmentCode` — this exact class of string is what surfaced the room101 OTP-leak lead, so run it as a named, systematic search every time, not a lucky grep
 - Commented-out code blocks and dead branches (`// TODO`, `/* disabled for prod */`, unreachable `if (false)` guards) often reveal a feature or bypass path that still exists server-side even though the client no longer exposes it
@@ -316,6 +320,7 @@ something, and keep it hard-bounded even then.
 - Role/permission checks (`canEdit`, `isOwner`, `hasAccess`) that gate UI rendering only — a lead for `vulnerabilities/idor.md`/`broken_function_level_authorization.md`
 - Input validation (length, format, allowed values) enforced only in a form component — a lead for injection classes once the same field is sent directly to the API
 - Every trust assumption found here is a **lead**, not a finding: it says what the frontend expects the backend to enforce, not that the backend fails to. Test it server-side before recording anything beyond `record_coverage`
+- **For a JS-heavy SPA, don't stop at noting these leads — `load_skill(["client_bundle_analysis"])` and work them to conclusion.** That skill turns the bundle into (1) the full API contract — every endpoint and every request field, including the hidden identifiers no form exposes (mass-assignment/injection surface) — and (2) an executable server-trust tamper worklist with the exact request to send for each client computation/gate/validation. It is also how you build a valid baseline for a complex write endpoint that `500`s on a hand-built request (the client already builds a working one — read it), rather than recording the whole class as "untestable".
 
 **Interactive follow-up for click/type-gated API calls**
 - Both crawls above are automatic and blind — neither understands that a
@@ -427,6 +432,34 @@ A nuclei match is a **candidate**, never an auto-reported finding. Route every `
 - Re-fetch and confirm the match is live and reproducible right now — templates carry false positives, and a matcher can fire on an error page, a honeypot, or a WAF block page.
 - A detection-only template (`http/technologies/*`, a version banner) is recon enrichment, not a vulnerability — fold it back into `assets.jsonl`'s `tech[]`, do not report it.
 - A `critical`/`high` template that genuinely fires becomes a candidate for the matching `vulnerabilities/*` skill, carried with the same `record_coverage` / `open_proof_gap` discipline as every other recon lead. The template firing is the start of verification, not the end.
+
+### Wapiti — bounded automated active scan (standard/deep, scoped)
+
+`nuclei` matches known templates; `wapiti` (installed in the sandbox, easy to
+forget) actively probes the app's own forms and parameters for injection classes
+(XSS, SQLi, path traversal, SSRF, command injection, CRLF) — complementary active
+coverage. Run it **scoped and bounded**, the same scan-mode gate as Layer 4
+(standard/deep only, never `quick`), and only against in-scope origins classified
+`app`/`api`/`admin` in `assets.jsonl`:
+
+```bash
+wapiti -u https://app.target.tld \
+  --scope folder --max-links-per-page 20 --max-depth 3 --timeout 10 \
+  -m "xss,sql,exec,file,ssrf,crlf" --flush-session \
+  -f json -o /workspace/recon/wapiti.json
+```
+
+- **Scope discipline:** `--scope folder`/`domain` must stay inside the authorized
+  scope — never let it wander to an out-of-scope host (the same hard rule as
+  `coordination/root_agent.md`'s Program Scope). It is loud; treat it like Layer 4.
+- **Authenticated runs find the real surface:** pass a provisioned actor's session
+  (`-H "Cookie: ..."` or the `--auth-*` flags) from
+  `reconnaissance/account_provisioning.md` — the unauthenticated run only sees the
+  public app, which is the minority of the attack surface.
+- **Every wapiti entry is a lead, not a finding** — exactly like a nuclei hit:
+  re-verify it live and route it through `analysis/counterevidence.md` and the
+  matching `vulnerabilities/*` skill before reporting. Active scanners carry false
+  positives; a wapiti "XSS" is a candidate until you prove it executes.
 
 ## Pipeline Scripts (run inside the sandbox)
 

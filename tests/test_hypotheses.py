@@ -24,11 +24,16 @@ import strix.core.runner as runner_module
 from strix.tools.attack_surface.tools import _record_impl, hydrate_attack_surface_from_disk
 from strix.tools.hypotheses.tools import (
     ATTEMPT_RESULT_STATUSES,
+    DEFAULT_ATTEMPT_BUDGET,
     NOT_APPLICABLE,
     RESOLVED,
     RESOLVED_MISSING,
     RESOLVED_STALE,
     RESOLVED_UNAVAILABLE,
+    SLOT_ABANDONED,
+    SLOT_CANCELLED,
+    SLOT_COMPLETED,
+    SLOT_FAILED,
     STATUS_BLOCKED,
     STATUS_CONFIRMED,
     STATUS_NEEDS_VALIDATION,
@@ -38,10 +43,14 @@ from strix.tools.hypotheses.tools import (
     _record_attempt_impl,
     _resolve_request_evidence,
     _update_impl,
+    budget_status,
     create_hypothesis,
     hydrate_hypotheses_from_disk,
+    mark_dispatched,
     query_hypotheses,
     record_test_attempt,
+    reserve_attempt,
+    settle_attempt,
     update_hypothesis,
 )
 
@@ -423,6 +432,100 @@ def test_observation_evidence_is_not_applicable_for_replay() -> None:
     h = _all()["hypotheses"][0]
     obs = [e for e in h["evidence"] if e["kind"] == "observation"]
     assert obs and obs[0]["resolved_state"] == NOT_APPLICABLE
+
+
+# --------------------------------------------------------------------------- #
+# Cumulative attempt budget: atomic reservations, settle accounting, resume
+# --------------------------------------------------------------------------- #
+
+
+def test_reserve_attempt_is_cumulative_and_caps() -> None:
+    hid = _create()["hypothesis_id"]
+    rids = []
+    for _ in range(DEFAULT_ATTEMPT_BUDGET):
+        r = reserve_attempt(hid, tool="sqlmap")
+        assert r["reserved"] is True
+        rids.append(r["reservation_id"])
+    # The (N+1)th reservation is refused — cumulative across calls, not per-call.
+    exhausted = reserve_attempt(hid, tool="sqlmap")
+    assert exhausted["reserved"] is False and exhausted["remaining"] == 0
+    assert budget_status(hid)["used"] == DEFAULT_ATTEMPT_BUDGET
+
+
+def test_settle_completed_and_failed_consume_cancelled_releases() -> None:
+    hid = _create()["hypothesis_id"]
+    a = reserve_attempt(hid, tool="sqlmap")["reservation_id"]
+    b = reserve_attempt(hid, tool="sqlmap")["reservation_id"]
+    c = reserve_attempt(hid, tool="sqlmap")["reservation_id"]
+    settle_attempt(hid, a, state=SLOT_COMPLETED)  # consumes
+    settle_attempt(hid, b, state=SLOT_FAILED)     # consumes (explicit accounting)
+    settle_attempt(hid, c, state=SLOT_CANCELLED)  # releases
+    assert budget_status(hid)["used"] == 2  # a + b consume, c released
+    # Settling is idempotent.
+    again = settle_attempt(hid, a, state=SLOT_COMPLETED)
+    assert again["already_settled"] is True
+
+
+def test_resume_abandons_in_flight_reservations_but_keeps_settled(_stores: Path) -> None:
+    hid = _create()["hypothesis_id"]
+    done = reserve_attempt(hid, tool="sqlmap")["reservation_id"]
+    settle_attempt(hid, done, state=SLOT_COMPLETED)
+    reserve_attempt(hid, tool="sqlmap")  # left RESERVED (process "crashes" mid-attempt)
+    assert budget_status(hid)["used"] == 2
+    # A resuming process re-hydrates from disk.
+    hydrate_hypotheses_from_disk(_stores)
+    status = budget_status(hid)
+    # The completed slot persists; the in-flight one is ABANDONED and still
+    # accounted (consumes) so a crash can't silently refund the budget.
+    states = {s["state"] for s in status["slots"]}
+    assert SLOT_COMPLETED in states and SLOT_ABANDONED in states
+    assert status["used"] == 2
+
+
+def test_mark_dispatched_is_idempotent_and_records_the_transition() -> None:
+    hid = _create()["hypothesis_id"]
+    rid = reserve_attempt(hid, tool="sqlmap")["reservation_id"]
+    assert mark_dispatched(hid, rid)["dispatched"] is True
+    assert mark_dispatched(hid, rid)["dispatched"] is True  # idempotent
+    slot = next(s for s in budget_status(hid)["slots"] if s["id"] == rid)
+    assert slot["dispatched"] is True and slot["dispatched_at"]
+    assert mark_dispatched(hid, "no-such-rid")["success"] is False
+
+
+def test_cancel_after_dispatch_is_coerced_to_consume_never_refunds() -> None:
+    # Requirement #4: once traffic may have started, a cancel MUST consume. Even
+    # if a caller settles a DISPATCHED slot as cancelled, the store coerces it to
+    # `failed` so the budget is never refunded.
+    hid = _create()["hypothesis_id"]
+    rid = reserve_attempt(hid, tool="sqlmap")["reservation_id"]
+    mark_dispatched(hid, rid)
+    settled = settle_attempt(hid, rid, state=SLOT_CANCELLED)
+    assert settled["coerced_dispatched_cancel"] is True
+    assert settled["settled"] == SLOT_FAILED
+    assert budget_status(hid)["used"] == 1  # consumed, not refunded
+
+
+def test_cancel_before_dispatch_still_releases() -> None:
+    # A reservation that never dispatched (no traffic) is genuinely released.
+    hid = _create()["hypothesis_id"]
+    rid = reserve_attempt(hid, tool="sqlmap")["reservation_id"]
+    settled = settle_attempt(hid, rid, state=SLOT_CANCELLED)
+    assert settled["coerced_dispatched_cancel"] is False
+    assert settled["settled"] == SLOT_CANCELLED
+    assert budget_status(hid)["used"] == 0  # released
+
+
+def test_dispatched_but_unsettled_slot_is_abandoned_on_resume(_stores: Path) -> None:
+    # A crash AFTER dispatch leaves the slot reserved+dispatched; on resume it is
+    # abandoned (consumes) — a crash mid-traffic can never refund the budget.
+    hid = _create()["hypothesis_id"]
+    rid = reserve_attempt(hid, tool="sqlmap")["reservation_id"]
+    mark_dispatched(hid, rid)  # traffic started, then the process "crashes"
+    assert budget_status(hid)["used"] == 1
+    hydrate_hypotheses_from_disk(_stores)
+    slot = next(s for s in budget_status(hid)["slots"] if s["id"] == rid)
+    assert slot["state"] == SLOT_ABANDONED and slot.get("dispatched") is True
+    assert budget_status(hid)["used"] == 1  # still consumed after resume
 
 
 # --------------------------------------------------------------------------- #

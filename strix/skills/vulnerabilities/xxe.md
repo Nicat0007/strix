@@ -218,6 +218,23 @@ Targets: transform endpoints, reporting engines (XSLT/Jasper/FOP), xml-styleshee
 9. Combine with path traversal and deserialization where XML touches downstream systems
 10. Document exact parser behavior per stack; defenses must match real libraries and flags
 
+## No-Egress / Local-DTD XXE and Block Handling
+
+When outbound network is filtered, XXE is usually still exploitable — don't
+conclude "no XXE" because an external-DTD callback never fires:
+
+- **Local-DTD reuse (zero outbound)** — reference a DTD that already ships on the
+  target OS (e.g. `/usr/share/xml/fontconfig/fonts.dtd`, a JDK/.NET built-in),
+  redefine one of its internal parameter entities to wrap `file:///etc/passwd`,
+  and smuggle the content out through a parser **error message**. The canonical
+  no-egress technique — pairs with the Error-Based section above.
+- You only need one readable local DTD whose entity you can override; provoke
+  errors to enumerate which exist.
+
+A `403` on the XML endpoint is `blocked`, not `ruled_out` — vary the content-type
+(`application/xml` vs `text/xml` vs a file-upload parser) and see
+`vulnerabilities/waf_evasion.md` (`load_skill(["waf_evasion"])`).
+
 ## Summary
 
 XXE is eliminated by hardening parsers: forbid DOCTYPE, disable external entity resolution, and disable network access for XML processors and transformers across every code path.

@@ -211,6 +211,15 @@ The `X-Forwarded-*` family is informational — there is no protocol guarantee a
 6. Before claiming a CRLF win, verify the second line landed as a real header in the cache or downstream consumer — many servers strip CRLF silently
 7. Outbound email flows are a separate but related surface — user input flowing into SMTP headers (To, Cc, Subject, Reply-To) is its own injection class with the same root cause
 
+## Second-Order and Passive Signals
+
+Two cheap additions. A header value that is *reflected and then cached* is a
+second-order issue — the victim is a *later* user served the poisoned cache entry,
+not you; confirm with an independent second request that retrieves the poisoned
+value from cache (`second_order_injection.md`). And `passive_scan` already flags
+verbose / debug / tech-disclosure response headers over captured traffic for free
+— read its output before hand-auditing headers.
+
 ## Summary
 
 Header injection is fundamentally a normalization failure: somewhere on the request → response path, user input reached a header value without CR/LF stripping or proper escaping. The impact tiers up from open redirect to cache poisoning to request smuggling depending on which downstream component trusts the resulting header. Audit every header whose value moves with input, and treat every `X-Forwarded-*` / Host trust as a security boundary that needs explicit justification.

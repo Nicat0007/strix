@@ -240,6 +240,216 @@ async def list_requests(
         return _err("list_requests", exc)
 
 
+# ---------------------------------------------------------------------------
+# Passive scan — deterministic, lead-only checks over already-captured traffic.
+# Every request the agent makes flows through Caido; this reads those responses
+# and flags security signals the agent never explicitly tested. Leads only — the
+# matching skill + analysis/counterevidence.md still gate reporting.
+# ---------------------------------------------------------------------------
+
+_EXPECTED_SECURITY_HEADERS: tuple[tuple[str, str], ...] = (
+    ("content-security-policy", "no CSP (XSS/clickjacking mitigation absent)"),
+    ("x-content-type-options", "missing nosniff (MIME-sniffing)"),
+)
+_VERBOSE_HEADERS: tuple[str, ...] = (
+    "server", "x-powered-by", "x-aspnet-version", "x-aspnetmvc-version",
+    "x-runtime", "x-generator", "x-debug-token", "x-debug-token-link",
+)
+_ERROR_SIGNATURES: tuple[str, ...] = (
+    "you have an error in your sql syntax", "sqlstate", "ora-0", "pg::",
+    "traceback (most recent call last)", "fatal error:", " on line ",
+    "exception in thread", "at java.", "nullreferenceexception",
+    "undefined index", "stack trace:", "org.springframework", "werkzeug debugger",
+)
+_SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("aws_access_key", re.compile(r"AKIA[0-9A-Z]{16}")),
+    ("google_api_key", re.compile(r"AIza[0-9A-Za-z_\-]{35}")),
+    ("private_key", re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----")),
+    ("jwt", re.compile(r"eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{6,}")),
+    ("slack_token", re.compile(r"xox[baprs]-[0-9A-Za-z\-]{10,}")),
+)
+_INTERNAL_PATH_RE = re.compile(r"(/var/www/|/home/[a-z0-9_]+/|[A-Za-z]:\\[A-Za-z])")
+
+
+def _passive_leads_for_response(
+    *,
+    host: str,
+    path: str,
+    method: str,
+    query: str,
+    is_tls: bool,
+    resp_headers: dict[str, str],
+    resp_body: str,
+) -> list[dict[str, Any]]:
+    """Pure, deterministic passive checks over one captured response. Lead-only."""
+    leads: list[dict[str, Any]] = []
+    h = {str(k).lower(): str(v) for k, v in (resp_headers or {}).items()}
+    ctype = h.get("content-type", "").lower()
+    is_html = "text/html" in ctype
+    loc = f"{method} {host}{path}"
+
+    def add(check: str, detail: str, ref: str) -> None:
+        leads.append({"check": check, "location": loc, "detail": detail, "see": ref})
+
+    if is_html:
+        for name, detail in _EXPECTED_SECURITY_HEADERS:
+            if name not in h:
+                add(f"missing_{name}", detail, "vulnerabilities/information_disclosure.md")
+        if "x-frame-options" not in h and "frame-ancestors" not in h.get(
+            "content-security-policy", ""
+        ).lower():
+            add("missing_clickjacking_protection",
+                "no X-Frame-Options and no CSP frame-ancestors",
+                "vulnerabilities/browser_security.md")
+    if is_tls and "strict-transport-security" not in h:
+        add("missing_hsts", "no HSTS on an HTTPS response",
+            "vulnerabilities/information_disclosure.md")
+
+    acao = h.get("access-control-allow-origin", "")
+    acac = h.get("access-control-allow-credentials", "").strip().lower() == "true"
+    if acao == "null":
+        add("cors_null_origin", "ACAO: null is attacker-reachable",
+            "vulnerabilities/cors_misconfiguration.md")
+    elif acao and acao != "*" and acac:
+        add("cors_reflected_with_credentials",
+            f"ACAO names a specific origin ({acao[:60]}) with credentials — verify it reflects",
+            "vulnerabilities/cors_misconfiguration.md")
+
+    sc = h.get("set-cookie", "")
+    if sc:
+        low = sc.lower()
+        missing = [
+            f for f, present in (("Secure", "secure" in low),
+                                 ("HttpOnly", "httponly" in low),
+                                 ("SameSite", "samesite" in low)) if not present
+        ]
+        if missing:
+            add("cookie_missing_flags", f"Set-Cookie missing: {', '.join(missing)}",
+                "vulnerabilities/information_disclosure.md")
+
+    present_verbose = [vh for vh in _VERBOSE_HEADERS if vh in h]
+    if present_verbose:
+        add("verbose_headers",
+            "tech/version disclosure: " + ", ".join(f"{vh}: {h[vh][:40]}" for vh in present_verbose),
+            "vulnerabilities/information_disclosure.md")
+        if any(vh.startswith("x-debug") for vh in present_verbose):
+            add("debug_mode_enabled", "a debug/profiler header is exposed",
+                "vulnerabilities/information_disclosure.md")
+
+    body = resp_body or ""
+    body_low = body.lower()
+    for sig in _ERROR_SIGNATURES:
+        if sig in body_low:
+            add("verbose_error", f"error/stack signature in response: {sig!r}",
+                "vulnerabilities/information_disclosure.md")
+            break
+    for name, pat in _SECRET_PATTERNS:
+        if pat.search(body):
+            add("secret_in_response", f"{name}-shaped value in response body — verify it is live",
+                "vulnerabilities/information_disclosure.md")
+    if _INTERNAL_PATH_RE.search(body):
+        add("internal_path_disclosure", "internal filesystem path in response",
+            "vulnerabilities/information_disclosure.md")
+
+    if query and body:
+        from urllib.parse import unquote
+        for pair in query.split("&"):
+            _, _, raw_val = pair.partition("=")
+            val = unquote(raw_val)
+            if len(val) >= 4 and val in body:
+                add("reflected_input",
+                    f"query value {val[:40]!r} reflected verbatim in response — XSS/injection lead",
+                    "vulnerabilities/xss.md")
+                break
+    return leads
+
+
+@function_tool(timeout=120)
+async def passive_scan(
+    ctx: RunContextWrapper,
+    scope_id: str | None = None,
+    limit: int = 40,
+) -> str:
+    """Deterministic passive scan over traffic Caido has ALREADY captured — free leads.
+
+    Every request any agent makes flows through the proxy. This reads the most
+    recent captured responses and flags security signals nobody explicitly tested:
+    missing/weak security headers, cookie-flag gaps, permissive CORS, verbose
+    tech/version and debug headers, verbose errors / stack traces, internal paths,
+    secret-shaped values in bodies, and query values reflected verbatim (an
+    XSS/injection lead). It sends NO new traffic — it only inspects what exists, so
+    it costs nothing against the target and little in tokens.
+
+    Run it periodically (after recon, after each hunting wave) and route each lead
+    to the named skill. Every row is a LEAD, never a finding — `analysis/counterevidence.md`
+    still gates, and reflection/CORS/secret leads in particular need active
+    verification (a reflected value is not XSS until you prove it executes).
+
+    Args:
+        scope_id: Limit to one Caido scope (in-scope hosts); omit for all captured.
+        limit: Most-recent requests to inspect (default 40, max 150).
+    """
+    client = await _ctx_client(ctx)
+    if client is None:
+        return _no_client()
+    scope_id = clean_optional(scope_id)
+    limit = max(1, min(int(limit), 150))
+    try:
+        connection = await _call(
+            client,
+            lambda c: caido_api.list_requests_with_client(c, first=limit, scope_id=scope_id),
+        )
+        leads: list[dict[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
+        scanned = 0
+        for edge in connection.edges:
+            req = edge.node.request
+            rid = getattr(req, "id", None)
+            if not rid:
+                continue
+            try:
+                detail = await _call(
+                    client,
+                    lambda c, _id=rid: caido_api.get_request_with_client(c, _id),
+                )
+            except Exception:  # noqa: BLE001 - skip an unfetchable entry, keep scanning.
+                continue
+            resp = getattr(detail, "response", None) if detail is not None else None
+            parsed = caido_api.parse_raw_response(getattr(resp, "raw", None) if resp else None)
+            if parsed is None:
+                continue
+            scanned += 1
+            for lead in _passive_leads_for_response(
+                host=str(getattr(req, "host", "")),
+                path=str(getattr(req, "path", "")),
+                method=str(getattr(req, "method", "")),
+                query=str(getattr(req, "query", "") or ""),
+                is_tls=bool(getattr(req, "is_tls", False)),
+                resp_headers=parsed.get("headers", {}),
+                resp_body=parsed.get("body", "") or "",
+            ):
+                dkey = (lead["check"], lead["location"])
+                if dkey in seen:
+                    continue
+                seen.add(dkey)
+                leads.append(lead)
+        return json.dumps(
+            {
+                "success": True,
+                "scanned": scanned,
+                "lead_count": len(leads),
+                "leads": leads[:200],
+                "note": "Deterministic leads from already-captured traffic — NOT findings. "
+                        "Route each to the named skill and confirm per "
+                        "analysis/counterevidence.md before filing.",
+            },
+            ensure_ascii=False,
+            default=str,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _err("passive_scan", exc)
+
+
 @function_tool(timeout=60)
 async def view_request(
     ctx: RunContextWrapper,

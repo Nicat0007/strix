@@ -137,6 +137,14 @@ Detection is mostly about payload shapes (above) plus a couple of light helpers.
 
 For server-side gadget hunting there is no reliable one-click tool — enumerate `node_modules` in white-box scope and match polluted keys to sinks (`ejs`/`pug` `outputFunctionName`, `child_process` `shell`/`NODE_OPTIONS`) as covered above.
 
+## Block Handling
+
+A `403`/WAF on the polluting request is `blocked`, not `ruled_out`. Move the
+pollution vector — JSON body `__proto__`, query `?__proto__[x]=y`,
+`constructor[prototype][x]`, or `__proto__` nested a level deeper — and re-encode
+the key; frameworks normalize these differently, so a block on one form rarely
+covers all. See `vulnerabilities/waf_evasion.md` (`load_skill(["waf_evasion"])`).
+
 ## Summary
 
 Any unsafe recursive merge of user-controlled keys is a prototype pollution candidate. Block `__proto__`, `constructor`, and `prototype` keys, use null-prototype objects, and validate impact with behavioral proof — not just reflected keys.

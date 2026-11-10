@@ -55,14 +55,20 @@ from strix.tools.agent_metrics.tools import record_activity_tick
 from strix.tools.attack_surface.tools import _redact_secrets
 from strix.tools.crawl_executor.tools import CrawlTransport, _exec, _read_capped, _write_file
 from strix.tools.hypotheses.tools import (
+    DEFAULT_ATTEMPT_BUDGET,
     RESOLVED,
     RESOLVED_MISSING,
     RESOLVED_STALE,
+    SLOT_COMPLETED,
+    SLOT_FAILED,
     STATUS_BLOCKED,
     STATUS_NEEDS_VALIDATION,
     STATUS_TESTING,
     _record_attempt_impl,
     lookup_hypothesis,
+    mark_dispatched,
+    reserve_attempt,
+    settle_attempt,
 )
 
 
@@ -82,6 +88,19 @@ _RISK = 1
 _MAX_LEVEL = 3
 _MAX_RISK = 2
 _OUTPUT_CAP = 2_000_000
+#: Hard-ish ceiling on the on-disk sqlmap log WHILE IT IS BEING WRITTEN. A shell
+#: watchdog samples the file every _DISK_POLL_S seconds and TERM/KILLs sqlmap
+#: once it exceeds this, so the log is bounded to ~this size plus at most one
+#: poll interval of output — never unbounded growth. This is separate from, and
+#: larger than, the _OUTPUT_CAP read-back (which bounds host memory on transfer).
+_DISK_CAP = 64_000_000
+_DISK_POLL_S = "0.5"
+#: Added to the inner sqlmap wall-clock bound to get the OUTER transport-exec
+#: timeout, so the in-shell `timeout`/watchdog always fires (and we read a
+#: bounded log) before the transport would kill the whole exec mid-cleanup.
+_TRANSPORT_TIMEOUT_MARGIN = 30.0
+#: Cumulative attempt cap per hypothesis within a run (see hypotheses.tools).
+_MAX_ATTEMPTS = DEFAULT_ATTEMPT_BUDGET
 _DIAG_MAX = 40
 _BODY_SCAN_CAP = 8192
 _BACKOFF_DELAY_S = 2
@@ -588,19 +607,49 @@ async def _cancel_cleanup(transport: CrawlTransport, *, paths: list[str], job_id
 
 async def _run_sqlmap_bounded(
     transport: CrawlTransport, argv: list[str], *, logfile: str, output_dir: str,
-    timeout: float, workdir: str, job_id: str,
+    timeout: float, workdir: str, job_id: str, disk_cap: int = _DISK_CAP,
 ) -> tuple[str, bool]:
-    """Run sqlmap with output drained to a FILE (no pipe to deadlock), then read
-    it back CAPPED in-sandbox (bounded host memory). Returns (log_text, timed_out).
-    Raises CancelledError after killing the process + scrubbing on cancellation."""
-    command = " ".join(shlex.quote(a) for a in argv) + f" > {shlex.quote(logfile)} 2>&1"
+    """Run sqlmap with BOTH a wall-clock bound and an on-disk growth bound.
+
+    The log is written to a FILE (no pipe to deadlock). A shell watchdog samples
+    the file's size every ``_DISK_POLL_S`` seconds and sends SIGTERM then SIGKILL
+    to sqlmap once it passes ``disk_cap`` — so the on-disk log cannot grow
+    unbounded during a long run (bounded to ~``disk_cap`` plus at most one poll
+    interval of output, then the process is terminated). A coreutils ``timeout``
+    additionally bounds sqlmap's wall-clock. The (already size-bounded) log is
+    then read back CAPPED to ``_OUTPUT_CAP`` so host memory is bounded on transfer
+    too. Returns (log_text, timed_out). Raises CancelledError after killing the
+    process (pkill on the job id, in the argv paths) + scrubbing on cancellation.
+    """
+    inner = " ".join(shlex.quote(a) for a in argv)
+    q_log = shlex.quote(logfile)
+    inner_timeout = max(1, int(timeout))
+    # Self-contained: no concurrent transport exec is assumed (the live sandbox
+    # session may serialize execs), so the watchdog runs inside the one shell.
+    script = (
+        f"timeout -k 5 {inner_timeout} {inner} > {q_log} 2>&1 &\n"
+        'pid=$!\n'
+        'while kill -0 "$pid" 2>/dev/null; do\n'
+        f'  sz=$(wc -c < {q_log} 2>/dev/null || echo 0)\n'
+        f'  if [ "$sz" -gt {int(disk_cap)} ]; then\n'
+        '    kill -TERM "$pid" 2>/dev/null; sleep 1; kill -KILL "$pid" 2>/dev/null; break\n'
+        '  fi\n'
+        f'  sleep {_DISK_POLL_S}\n'
+        'done\n'
+        'wait "$pid" 2>/dev/null\n'
+    )
     try:
-        _code, _out, timed_out = await _exec(transport, "sh", "-lc", command, timeout=timeout)
+        code, _out, timed_out = await _exec(
+            transport, "sh", "-lc", script, timeout=timeout + _TRANSPORT_TIMEOUT_MARGIN
+        )
     except asyncio.CancelledError:
         await asyncio.shield(
             _cancel_cleanup(transport, paths=[logfile, output_dir], job_id=job_id)
         )
         raise
+    # coreutils `timeout` exits 124 (TERM elapsed) / 137 (128+SIGKILL); the disk
+    # watchdog's KILL also surfaces as 137 through `wait`.
+    timed_out = timed_out or code in (124, 137)
     text, _truncated = await _read_capped(transport, logfile, _OUTPUT_CAP, workdir, job_id)
     return text, timed_out
 
@@ -798,6 +847,26 @@ async def _run_sqli_impl(  # noqa: PLR0911, PLR0912, PLR0915
         level=level_c, risk=risk_c, timeout_connect=_CONNECT_TIMEOUT_S,
         delay=delay, threads=threads, tamper=tamper,
     )
+    # Reserve ONE cumulative attempt slot (durable, atomic, resume-aware) right
+    # before the actual run. A continuation is a separate call -> a separate
+    # reservation, so repeated/concurrent calls for the same hypothesis cannot
+    # exceed the cap. Pre-flight blocks above never reach here, so they do not
+    # consume budget.
+    reservation = reserve_attempt(hid, tool="sqlmap", max_attempts=_MAX_ATTEMPTS)
+    if not reservation.get("reserved"):
+        return _blocked(
+            f"attempt budget exhausted for this hypothesis "
+            f"({reservation.get('used')}/{reservation.get('max')} used this run)",
+            "do not auto-retry; escalate to manual review or deliberately raise the budget",
+            RESOLVED,
+            {"attempt_budget": {"used": reservation.get("used"), "max": reservation.get("max"),
+                                "remaining": 0}})
+    rid = str(reservation["reservation_id"])
+    # Persist the dispatch transition BEFORE any traffic: once sqlmap may have
+    # sent requests, a cancellation must CONSUME the attempt (not refund it), and
+    # a crash here leaves the slot reserved -> abandoned (still consumed) on
+    # resume. Everything below this line is "post-dispatch".
+    mark_dispatched(hid, rid)
     try:
         stdout, timed_out = await _run_sqlmap_bounded(
             transport, argv, logfile=logfile, output_dir=output_dir,
@@ -806,11 +875,20 @@ async def _run_sqli_impl(  # noqa: PLR0911, PLR0912, PLR0915
     except asyncio.CancelledError:
         # _run_sqlmap_bounded already scrubbed the log/output; scrub the request.
         await asyncio.shield(_cancel_cleanup(transport, paths=paths, job_id=job_id))
+        # Traffic may already have been sent -> consume the attempt, never refund.
+        settle_attempt(hid, rid, state=SLOT_FAILED)
         _record(hypothesis_id=hid, result_status=STATUS_BLOCKED, verdict=VERDICT_CANCELLED,
-                rationale=rationale, outcome="sqlmap run cancelled; temp request/session removed",
+                rationale=rationale, outcome="sqlmap run cancelled after dispatch; attempt "
+                "consumed; temp request/session removed",
                 validation_required="re-run the targeted test to cover this parameter",
                 input_evidence=input_evidence, agent_id=agent_id, agent_name=agent_name)
         raise
+    except Exception:  # noqa: BLE001 - account the slot as failed, scrub, surface blocked
+        with contextlib.suppress(Exception):
+            await _cancel_cleanup(transport, paths=paths, job_id=job_id)
+        settle_attempt(hid, rid, state=SLOT_FAILED)
+        return _blocked("sqlmap execution failed unexpectedly (transport/exec error)",
+                        "retry once; if it persists, escalate to manual review", RESOLVED)
 
     if len(stdout) > _OUTPUT_CAP:
         stdout = stdout[:_OUTPUT_CAP]
@@ -854,6 +932,8 @@ async def _run_sqli_impl(  # noqa: PLR0911, PLR0912, PLR0915
     outcome = _clean(f"sqlmap verdict={verdict}" + (f"; {summary}" if summary else "")
                      + (f"; continuation={continuation_record['action']}"
                         if continuation_record else ""))
+    # The sqlmap run executed and sent traffic -> the slot is consumed (completed).
+    settle = settle_attempt(hid, rid, state=SLOT_COMPLETED)
     _record(hypothesis_id=hid, result_status=result_status, verdict=verdict, rationale=rationale,
             outcome=outcome, validation_required=validation, input_evidence=input_evidence,
             agent_id=agent_id, agent_name=agent_name)
@@ -866,6 +946,8 @@ async def _run_sqli_impl(  # noqa: PLR0911, PLR0912, PLR0915
         "baseline_status": status_pre, "result_status": result_status, "verdict": verdict,
         "summary": summary, "diagnostics": diagnostics[:_DIAG_MAX],
         "request_cap_enforced": False,
+        "attempt_budget": {"used": settle.get("used"), "max": settle.get("max"),
+                           "remaining": settle.get("remaining")},
         "note": "detection-only; a positive is needs_validation, never confirmed; a 403->200 "
                 "change after a continuation is NOT a confirmed bypass (semantic validation "
                 "still required). sqlmap has no request-count flag — time/concurrency/attempt "

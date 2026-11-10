@@ -187,6 +187,19 @@ Also inspect DevTools network initiators, service workers, storage, CSP violatio
 6. Keep browser-version claims narrow and retest; these behaviors change faster than server-side primitives.
 7. Prefer a small state-machine explanation over a large payload catalog.
 
+## DOM Clobbering
+
+When script injection is blocked but *HTML* injection is possible (a sanitizer
+that strips `<script>`/event handlers but allows `id`/`name` attributes), **DOM
+clobbering** overwrites JavaScript references via named HTML elements: an
+`<a id="x">` makes `window.x` / `document.x` resolve to that element, and
+`<form><input name="y">` clobbers `form.y`. If the app later reads a global or
+config it assumes script-defined (`window.config`, `someObj.url`, a default it
+expects `undefined`), a clobbered element controls it — reaching an XSS sink or a
+logic bypass with **no script at all**. Grep the bundle for globals read from
+`document.*` / `window.*` that an attacker-injected `id`/`name` could shadow, and
+for sanitizers that allow `id`/`name` through (cross-link `xss.md`'s DOM section).
+
 ## Summary
 
 Browser exploitation is state-machine exploitation. Map origins, context references, policies, workers, storage, navigation, and decoding as one system. Prove each state transition with browser evidence, then chain only the primitives that survive the target's browser and interaction constraints.

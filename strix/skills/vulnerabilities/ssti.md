@@ -265,6 +265,16 @@ Handlebars itself is harder (default helpers are restricted), but custom helpers
 7. Output not reflected? Time-based and OAST work as well as for SQLi — `${T(java.lang.Thread).sleep(5000)}` for SpEL, `{{cycler.__init__.__globals__.__import__('time').sleep(5)}}` (or the `request.application.__globals__.__builtins__` walk in Flask) for Jinja — bare `__import__` is not in the template namespace and will raise `UndefinedError`
 8. Email previews and PDF generators are gold mines — they're often built on the same engine as the public site but exposed to less-validated input flows
 
+## Block Handling
+
+A `403`/WAF on a template payload is `blocked`, not `ruled_out`. Obfuscate the
+template syntax rather than abandoning it: string concat inside the expression
+(`{{'cycl'~'er'}}`), attribute access via `[]`/`attr()` instead of `.`,
+hex/unicode escapes, and whitespace/comment insertion the engine ignores but the
+rule doesn't. Lead with a blind OAST probe so no command output trips
+output-based rules. See `vulnerabilities/waf_evasion.md`
+(`load_skill(["waf_evasion"])`).
+
 ## Summary
 
 SSTI is fundamentally different from XSS at the same syntactic location: the payload runs on the server, in the host language, with whatever objects the engine exposes. Engine fingerprinting via the math-probe table narrows the search space immediately. From there it's a race between the sandbox's denylist and the language's reflection capability — and the language usually wins. Treat any user input that reaches a template renderer (not a templated context variable) as RCE-shaped until proven sandboxed.

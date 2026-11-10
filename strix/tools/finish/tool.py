@@ -65,6 +65,10 @@ def _do_finish(
         )
         vuln_count = len(report_state.vulnerability_reports)
         coverage_summary = _coverage_summary(agent_graph)
+        matrix_gate = _applicable_untested_gate()
+        if matrix_gate is not None:
+            matrix_gate.update(coverage_summary)
+            return matrix_gate
     except (ImportError, AttributeError) as e:
         logger.exception("finish_scan persistence failed")
         return {"success": False, "error": f"Failed to complete scan: {e!s}"}
@@ -133,6 +137,42 @@ def _coverage_summary(agent_graph: dict[str, Any]) -> dict[str, Any]:
             "before the report goes out."
         )
     return summary
+
+
+_matrix_gate_pushed_back = False
+
+
+def _applicable_untested_gate() -> dict[str, Any] | None:
+    """Soft gate: push back ONCE when the coverage matrix holds surfaces the scan
+    confirmed APPLICABLE but never TESTED, so a scan doesn't silently finish over
+    known-untested surface. Returns a non-completing result the first time, then
+    ``None`` (allow finishing) forever after — it can never deadlock, and a second
+    ``finish_scan`` call always proceeds, keeping the root agent in control.
+    """
+    global _matrix_gate_pushed_back  # noqa: PLW0603
+    if _matrix_gate_pushed_back:
+        return None
+    try:
+        from strix.tools.coverage_matrix.tools import applicable_untested_summary
+
+        summary = applicable_untested_summary()
+    except Exception:  # noqa: BLE001 - a gate failure must never block finishing.
+        return None
+    if not summary.get("count"):
+        return None
+    _matrix_gate_pushed_back = True
+    return {
+        "success": True,
+        "scan_completed": False,
+        "message": (
+            f"{summary['count']} surface(s) were confirmed APPLICABLE but never tested. "
+            "Before finishing, either dispatch a subagent to test them, or record a "
+            "needs_follow_up / not_applicable with evidence (per analysis/counterevidence.md), "
+            "then call finish_scan again. One-time check — a second finish_scan call "
+            "proceeds regardless, so you stay in control."
+        ),
+        "applicable_untested": summary.get("cells", []),
+    }
 
 
 @function_tool(timeout=60)

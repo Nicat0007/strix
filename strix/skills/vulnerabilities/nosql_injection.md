@@ -283,6 +283,28 @@ DoS surface (use only with explicit authorization scope):
 6. Automate `$regex` extraction with binary search: 7 requests per character vs 94 with linear search
 7. GraphQL resolvers are an underexplored entry point — try operator objects in any input type that reaches a NoSQL filter, and use introspection to find candidate fields
 
+## Blind-First — Differential and OOB on Silent Endpoints
+
+Most NoSQL injection is blind: the endpoint returns the same shape whether your
+operator matched or not. Don't conclude "no injection" from an unchanged body —
+lead with a **differential**: `[$ne]=x` vs `[$eq]=<known>` should return different
+result-set sizes/behaviour, and `$regex` anchored char-by-char extracts a secret
+with no visible output (binary-search it). Where server-side JS is enabled
+(`$where` / `$function`), a `sleep()` timing oracle or an OOB callback from the JS
+context confirms execution — use the interactsh generate+poll workflow in
+`second_order_injection.md`. A silent 200 is where blind NoSQLi lives, not evidence
+of its absence.
+
+## Block Handling
+
+A `403`/WAF on an operator payload is `blocked`, not `ruled_out`. The highest-value
+transform here is the **content-type flip**: a form `pass=x` can't carry an
+operator but `application/json` `{"pass":{"$ne":null}}` can — and conversely some
+WAFs only inspect JSON, so bracket-notation `pass[$ne]=x` in a form body slips
+past. Also try URL-encoded brackets (`%5B%24ne%5D`) and operator alternatives
+(`$nin`/`$gt`/`$regex`/`$exists`) when `$ne` is filtered. See
+`vulnerabilities/waf_evasion.md` (`load_skill(["waf_evasion"])`).
+
 ## Summary
 
 NoSQL injection exploits the same root cause as SQL injection — user input controlling query structure — but through operator embedding rather than syntax breaking. MongoDB is the primary target; enforce schema validation, use parameterized equivalents (strict mode, typed schemas), and never pass raw user input as a query object.

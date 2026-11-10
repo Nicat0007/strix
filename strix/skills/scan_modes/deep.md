@@ -146,16 +146,36 @@ When initial attempts fail:
 
 ## Agent Strategy
 
-After reconnaissance, decompose the application hierarchically:
+Depth in deep mode comes from **exhaustive coverage**, not from a large agent
+count. The durable coverage matrix (`plan_coverage` → `next_coverage_task` →
+`assess_coverage`, driven per `coordination/root_agent.md`) already guarantees
+every family is assessed on every surface — so thoroughness is enforced by the
+matrix, and the agents only have to *work* the cells. Spawning one agent per
+vulnerability class on top of that re-reads the same recon, re-derives the same
+map, and multiplies cost for no extra coverage.
 
-1. **Component level** - Auth System, Payment Gateway, User Profile, Admin Panel
-2. **Feature level** - Login Form, Registration API, Password Reset
-3. **Vulnerability level** - SQLi Agent, XSS Agent, Auth Bypass Agent
+Partition the opposite way — **by entry-point slice, not by vulnerability
+class** (`root_agent.md`'s "Delegate by Entry-Point Slice" / "Consolidate
+Related Classes"):
 
-Spawn specialized agents at each level. Scale horizontally to maximum parallelization:
-- Do NOT overload a single agent with multiple vulnerability types
-- Each agent focuses on one specific area or vulnerability type
-- Creates a massive parallel swarm covering every angle
+- One agent owns a cohesive slice of related endpoints/a component and tests
+  **every** applicable class on it — it reads each endpoint's purpose and
+  chooses the attack. Do not split that slice into a SQLi agent + an XSS agent
+  + an auth agent.
+- Every subagent reads the shared inventory first (`query_attack_surface`, the
+  threat model, `/workspace/recon/*`, the white-box `entry_points.md`) and does
+  **not** re-crawl or re-derive the map — re-derivation is the dominant waste a
+  deep run bleeds on.
+- Reserve a *dedicated* agent only for genuinely cross-cutting concerns that
+  don't belong to one slice: the auth/session model, a single sprawling API,
+  infrastructure/subdomain-takeover, business-logic QA, and chain validation.
+- **Bound parallelism** (`root_agent.md`'s "Bound Parallelism"): scale by
+  splitting slices across same-mandate agents, never by multiplying
+  vuln-class agents. Cap concurrent spawns to what the run's budget supports —
+  a handful at a time, reaped before the next wave — not an unbounded swarm.
+
+Exhaustiveness is non-negotiable; the *route to it* is the matrix plus
+well-scoped slice agents, not a one-agent-per-angle swarm.
 
 ## Mindset
 

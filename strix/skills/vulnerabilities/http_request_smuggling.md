@@ -250,6 +250,21 @@ Transfer-Encoding: chunked<CRLF>Transfer-Encoding: x  # TE twice — inject actu
 6. Test during low-traffic periods first to avoid affecting real users; always get explicit authorization for capture attempts
 7. If timing probes are inconsistent, pipeline two requests over the same connection and look for unexpected response swapping
 
+## CL.0 and Client-Side Desync
+
+Beyond CL.TE / TE.CL, newer desync shapes bypass front-ends that normalize TE/CL:
+
+- **CL.0** — the back-end ignores `Content-Length` entirely on certain endpoints
+  (often static handlers, redirects, or ones that read no body), treating the
+  body as the start of the *next* request. Probe endpoints that "shouldn't" have a
+  body; a poisoned follow-up response confirms it.
+- **Client-side desync (browser-powered)** — the victim's own browser is coaxed
+  into sending a desync'd request (no proxy in the path), turning smuggling into a
+  same-site attack deliverable from a malicious page. Relevant when there is no
+  shared front-end to poison but the back-end mishandles CL.
+- **0.CL** — the inverse of CL.0; pair timing probes with the CL.TE/TE.CL
+  methodology above.
+
 ## Summary
 
 HTTP request smuggling is eliminated by enforcing consistent TE/CL interpretation at every hop in the proxy chain, preferring end-to-end HTTP/2, and having back-end servers reject or normalize ambiguous requests. At the proxy level, never forward TE headers that were not present in the original request, and treat conflicting CL + TE as a hard error.

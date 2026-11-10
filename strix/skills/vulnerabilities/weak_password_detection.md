@@ -128,6 +128,76 @@ Weak or default credentials remain one of the most prevalent and high-impact vul
 - Databases (MySQL, PostgreSQL, MongoDB, Redis): weak/default credentials via the matching NSE brute script (`mysql-brute`, `pgsql-brute`, `mongodb-brute`, `redis-brute`) or a custom client script
 - Any protocol lacking a ready script: custom Python
 
+## MFA / 2FA Bypass
+
+This is the home of the `mfa` coverage family. Weak passwords plus missing or
+bypassable MFA is a critical chain, and MFA is frequently enforced in only one
+place. Work each angle; several double as `account_provisioning.md` entry points.
+
+- **Enforcement gaps (test first — cheapest).** MFA on the web login but not on
+  the API / mobile / `grant_type=password` token endpoint — hit `/token` or the
+  mobile login directly. MFA never re-checked on sensitive actions (no step-up).
+  MFA optional, and a session minted *before* enrollment stays valid.
+- **Session issued before the second factor.** The login response already carries
+  a usable cookie/JWT *before* the OTP step — try an authenticated endpoint with
+  that token without ever submitting a code. This is the highest-yield MFA bug.
+- **OTP brute / weak keyspace.** A 4–6 digit code with no throttle **on the verify
+  endpoint** (not just login) is brute-forceable (10^4–10^6). Confirm where the
+  throttle actually sits (see Rate-Limit section). GraphQL/array batching tests
+  many codes per request, side-stepping per-request limits.
+- **Response manipulation.** The verify decision reflected in a client-visible
+  status/body a proxy can flip (`{"mfaRequired":true}`→false, 403→200).
+- **Backup / recovery codes.** Predictable, unthrottled, or not invalidated after
+  use; the email/SMS recovery flow weaker than the primary factor (a downgrade).
+- **Remember-device / trust cookie.** A forgeable or guessable "trusted device"
+  token that skips MFA, or one not bound to the user.
+- **WebAuthn / passkey downgrade.** A passkey-capable login that still offers a
+  weaker fallback (OTP/password) an attacker can force by selecting or omitting
+  the factor, and the server accepts the downgrade.
+- **Race on verify.** Parallel OTP submissions racing a non-atomic attempt counter
+  (cross-link `race_conditions.md`).
+
+**Validation:** a real authenticated session reached without a valid second
+factor — per `analysis/counterevidence.md`, show a benign control that *should*
+be blocked is blocked, while the bypass path succeeds. A missing re-prompt alone,
+with no session actually obtained, is not a finding.
+
+## Rate-Limit and Timing-Bypass (systematic)
+
+This is the home of the `rate_limit` family — a per-endpoint methodology, not a
+footnote to brute-force. Its value is almost never standalone; it's what the
+bypass *unlocks* (OTP brute → ATO, password spray, enumeration).
+
+- **Classify the control first — "no rate limit" without this is a false
+  negative.** Four distinct states: (1) **hard lockout** (account disabled after
+  N), (2) **soft IP-throttle** (429 by source IP), (3) **CAPTCHA-injection**
+  (challenge after N), (4) **silent shadow-throttle** (responses look normal but
+  requests are dropped/delayed server-side). Establish a benign baseline
+  success-rate *before* concluding anything — 50 requests with no 429 may be 50
+  silently dropped.
+- **Per-endpoint, not global.** A limit on `/login` rarely covers `/verify-otp`,
+  `/reset`, `/api/v2/login`, the GraphQL login mutation, or the mobile endpoint.
+  Enumerate each sensitive action separately from `query_attack_surface`.
+- **IP-rotation header spoofing** against an IP-keyed throttle: `X-Forwarded-For`,
+  `X-Real-IP`, `X-Client-IP`, `X-Originating-IP`, `CF-Connecting-IP`,
+  `True-Client-IP`, `Forwarded` — rotate the value per request (cross-link
+  `header_injection.md`). A changing value that resets the counter proves the
+  limit keys on a spoofable header.
+- **Counter-reset tricks.** Rotate username/casing, add padding params, vary path
+  case (`/Login`), trailing dot host, or re-authenticate to reset a per-session
+  counter.
+- **Parallelism / race window.** Many limits check-then-increment non-atomically —
+  a simultaneous burst all passes before the counter updates (cross-link
+  `race_conditions.md`); HTTP/2 multiplexing / single-packet for the tightest
+  window.
+- **GraphQL / batch.** Array-batched credentials in one request bypass
+  per-request counting.
+
+**Closure discipline (counterevidence):** prove the bypass with a real negative
+control — N requests blocked *without* the trick, N+ succeeding *with* it — never
+"I sent many and none were blocked" (indistinguishable from shadow-throttling).
+Report at the severity of what the bypass reaches, not the missing control alone.
+
 ## Tooling
 
 ### ffuf (primary for web logins)

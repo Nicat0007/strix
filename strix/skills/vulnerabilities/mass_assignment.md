@@ -156,6 +156,30 @@ before/after comparison per field.
 4. Inspect SDKs/mobile apps for hidden field names and nested write examples
 5. Prefer minimal PoCs that prove durable state changes; avoid UI-only effects
 
+## Hidden-Field Discovery and Block Handling
+
+The hard part is finding the *unlisted* bindable fields — don't test only the
+fields the UI/docs expose:
+
+- **`arjun`** brute-forces accepted parameter names against the create/update
+  endpoint (`arjun -u <url> -m JSON`); then try each discovered name as a
+  privilege/state field (`role`, `is_admin`, `verified`, `owner_id`, `balance`,
+  `status`, `approved`).
+- **Response/schema diff** — create an object, read it back; any field in the
+  response you didn't send is a candidate to *set* on the next create/update.
+- **The client bundle lists the real field set** — for a JS SPA, the
+  `fetch`/`axios` call in the bundle shows every field the client sends, including
+  hidden identifiers no form exposes (`custom/client_bundle_analysis.md`). This is
+  often faster and more complete than `arjun` for a known endpoint.
+- **Sibling endpoints / API versions** — `/api/v2` or the mobile endpoint often
+  binds a superset of fields the web form hides.
+- **Nested & typed injection** — `{"user":{"role":"admin"}}`, `role[]=admin`,
+  type juggling on the privileged field.
+
+Blocked (`403`/WAF) on the privileged field is `blocked`, not `ruled_out` —
+re-encode the key, move it between JSON/form/query, and see
+`vulnerabilities/waf_evasion.md` (`load_skill(["waf_evasion"])`).
+
 ## Summary
 
 Mass assignment is eliminated by explicit mapping and per-field authorization. Treat every client-supplied attribute—especially nested or batch inputs—as untrusted until validated against an allowlist and caller scope.

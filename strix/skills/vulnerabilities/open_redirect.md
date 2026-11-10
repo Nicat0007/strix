@@ -160,6 +160,14 @@ Open redirects enable phishing, OAuth/OIDC code and token theft, and allowlist b
 6. Favor allowlists of exact origins plus optional path prefixes
 7. Keep a curated suite of redirect payloads per runtime (Java, Node, Python, Go)
 
+## Block Handling
+
+A `403`/WAF on a redirect payload is `blocked`, not `ruled_out`. Beyond the bypass
+catalog above, re-encode the target (URL-encode, double-encode, unicode/IDN
+homograph) and move it between the query, a fragment, and a header-based redirect
+(`%0d%0a` CRLF — cross-link `header_injection.md`). See
+`vulnerabilities/waf_evasion.md` (`load_skill(["waf_evasion"])`).
+
 ## Summary
 
 Redirection is safe only when the final destination is constrained after canonicalization. Enforce exact origins, verify per hop, and treat client-provided destinations as untrusted across every stack.

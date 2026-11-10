@@ -99,6 +99,49 @@ with its counterevidence, and the endpoint stays in the attack-surface
 inventory for a different class — hypothesis-first narrows *where you look
 first*, it does not shrink the surface you're accountable for.
 
+## Plan Family Coverage (Every Family, Every App)
+
+Hypothesis-first narrows where you look *first*; it must not let whole
+vulnerability families go silently unassessed. Once recon has populated the
+attack-surface inventory, call **`plan_coverage`** — a deterministic planner
+that seeds the durable **coverage matrix**: every origin gets an *explicit*
+assessment of **every** family (default `unknown`), and a family is upgraded to
+`applicable` only where a concrete structural signal (a parameter, multiple
+actors, a state-changing method, a file/url-shaped path) actually exists. It
+fabricates nothing — `unknown` stays `unknown`, and it never marks
+`not_applicable`. It also creates one *deduplicated* hypothesis per applicable
+executor-family route (sqli/xss/idor/bfla) and links it, without flooding. Re-run
+it whenever new crawl evidence arrives (new endpoints/params/actors) — it expands
+the matrix and re-opens a `tested` route cell whose signal changed.
+
+Then drive the black-box worklist with **`next_coverage_task`** (a loop, not a
+one-shot): it hands back the next pending `(surface, family)` cell — **least-
+progressed family first**, so SQLi/XSS (already in-progress from the planner's
+linked hypotheses) never starve the other families — with the `load_skill` to
+pull (or `null` + `analysis/family_assessment` shared guidance for a `missing`-
+capability gap) and the prerequisites to establish. For each task: `load_skill`,
+work `analysis/family_assessment`'s 8 points for that family, establish the
+prerequisites (missing ones → `assess_coverage(execution="blocked", ...)`), and
+only then file a scoped hypothesis/test. This is how a non-SQLi/XSS family
+actually gets reached. Claiming a task marks it `in_progress`, never `tested`;
+when the run's budget runs out the rest stay pending and show up in the report.
+
+Applicability is tracked **separately** from execution
+(`applicable|not_applicable|unknown` vs
+`not_started|in_progress|tested|blocked|deferred`). Record real judgements with
+`assess_coverage`: `not_applicable` **requires** a rationale and evidence (a
+missing discovery signal is *not* proof of non-applicability); a `tested` cell
+covers **only** that one surface — never its siblings or the whole family; budget
+exhaustion or instability is `blocked`, never `tested`. A family with no executor
+or skill is a `missing` capability gap, which stays visible.
+
+For observed software, use the **`component_research`** workflow
+(`custom/component_research.md`): `record_component` the product/version with its
+evidence and confidence (CDN/proxy/front-end kept distinct from origin), then
+`record_advisory_candidate` with a **sourced** advisory — a version match is only
+ever a `candidate` until an in-range affected spec and a reachable feature are
+established, and an unknown version stays `uncertain`.
+
 ## Provision Accounts Before Hunting
 
 Once recon has run and the threat model is written, spawn account
@@ -109,14 +152,97 @@ business logic) that no hunter can reach because nobody has a token is the
 single biggest source of missed findings; provisioning is cheap relative
 to the coverage it unlocks.
 
+Treat obtaining at least one authenticated session — ideally two principals —
+as the **default expectation** of a black-box run, not an optional extra: the
+authenticated surface is most of the real attack surface, so a run that never
+authenticates has, at best, tested a minority of the target. When the run is
+interactive, do **not** wait for self-registration to fail before involving the
+operator: if the auth model already shows a hard human gate (real-phone OTP,
+manual approval, SSO you cannot complete), ask the operator up front with
+`respond_to_user` whether they can supply credentials or an out-of-band code.
+Operator-supplied access is the single highest-coverage, lowest-cost path —
+burning a whole hunting wave on bypass attempts first, when you can already see
+the wall, is the wrong order.
+
+**Hard rule — the SSO-only / no-self-registration case.** When recon shows the
+auth model is a wall you cannot get through on your own (SSO/OIDC-only with **no
+self-registration**, a real-phone OTP you can't receive, manual approval) **and
+the run is interactive**, you MUST `respond_to_user` and ask the operator for a
+test credential (ideally two accounts/roles) **before** you commit the scan to the
+unauthenticated surface only. Do not spend the whole engagement on the thin public
+surface and merely note "supply an account for a follow-on" in the final report —
+that defers the single highest-value half of the assessment (object-level authz on
+real data, file access, upload, role separation) to a next engagement that may
+never happen. One `respond_to_user` round-trip can unlock all of it. Proceed with
+the unauthenticated surface in parallel while you wait, but the ask is not
+optional when an interactive run hits this wall — asking only at the end, framed as
+a recommendation, is the exact value loss this rule exists to prevent.
+
+**Make it trivial for the operator to hand you a session.** Don't ask for a
+credential in a form they'd have to engineer. Ask them to log in once in their
+browser and paste back *whatever is easiest* — their `document.cookie` string, the
+`Cookie:` request header, or a "Copy as cURL" from DevTools — and then feed that
+paste straight into **`ingest_session(principal=..., session_blob=<their paste>,
+role=...)`**, which parses the cookie/token and records the actor in
+`auth_accounts.jsonl` for you. Do NOT hand-write that JSONL from their reply —
+getting one field wrong is why authenticated runs silently never start. After it
+records, **verify the session is live with `run_crawl_job`'s marker check** before
+hunting, and ask for a **second** account (another citizen, or a staff role) so
+`query_cross_actor_access` / `run_authorization_test` can prove cross-user and
+privilege boundaries. The whole authenticated surface — IDOR on citizen records,
+BFLA, upload handling, and (for an AI/LLM app) prompt injection on the model —
+unlocks from this one paste.
+
+**While you wait (or if no credential comes), hunt the thin surface HARD — don't
+switch into audit mode.** A reachable surface that *looks* small is where a tuned
+hunter still finds the bug a checklist misses. Before you let an agent conclude
+"anonymous surface exhausted", it must have actually pushed the high-yield
+offensive angles for *this* target class, not just confirmed the controls hold:
+
+- **LLM / AI apps** (chat, assistant, RAG, "AI"/"süni zəka" in the name): is there
+  ANY reachable input that reaches the model without a session — a public demo, a
+  pre-auth prompt, a health/model endpoint, an error that echoes a prompt? Load
+  `llm_prompt_injection` / `llm_applications` and test prompt injection, system-
+  prompt leak, and model/provider enumeration on whatever is reachable. These are
+  this project's highest-value modern class and are routinely skipped because "the
+  chat is behind auth" — check that it truly is, on every input.
+- **OIDC/SSO front door:** don't stop at "state is validated". Exercise the full
+  matrix — `response_type`/`response_mode` swaps, `prompt`/`nonce`/`scope`
+  tampering, `redirect_uri`/`Host`/`X-Forwarded-Host` (rims.gov.az's Medium was
+  exactly a Host-derived `redirect_uri`), duplicate/array params, and **force
+  errors** (malformed types, huge values) looking for a stack trace / framework
+  leak on an APP_DEBUG-off app.
+- **Error-forcing everywhere:** a 500 with a trace, a verbose validation message,
+  a translation-key leak, a differential that reveals a route — these are real
+  findings a conservative pass walks past.
+
+Run `passive_scan` over the captured traffic before concluding, and treat a thin
+surface as a reason to be *more* creative, not a reason to wind down early.
+
 If provisioning succeeds with two or more accounts, tell IDOR/BFLA/business-logic
-hunters explicitly to use both — a single-session hunter cannot prove
-cross-account or cross-tenant claims, only a routing table's worth of
-"looks restricted." If provisioning is blocked (real-phone OTP, manual
+hunters explicitly to use both — and to drive BOLA/BFLA through the deterministic
+**`run_authorization_test`** executor (two-actor replay with real semantic
+evidence), which is the strongest tool for that class and never fires without
+provisioned sessions. A single-session hunter cannot prove cross-account or
+cross-tenant claims, only a routing table's worth of "looks restricted."
+
+**A confirmed auth bypass is itself a provisioning win, not just a report.** If a
+hunter proves an OTP/verification bypass or recovers a credential, that obtained
+session must be pivoted straight into authenticated testing — recorded as a
+provisioned actor, crawled per-actor, and fed to `run_authorization_test` — not
+reported and dropped (see `reconnaissance/account_provisioning.md`'s "A Confirmed
+Bypass Is a Provisioned Session"). If the bypass is repeatable, get *two* sessions
+so the cross-actor executor can run. A critical auth-bypass that leaves the entire
+authenticated surface untested behind it is a half-finished job.
+
+If provisioning is blocked (real-phone OTP, manual
 approval, no operator credentials supplied), do not silently drop the
 authenticated surface: hunters still cover what's reachable unauthenticated,
 and the blocked authenticated surface goes into the final report as a named
-`needs_follow_up`, not an unmentioned gap.
+`needs_follow_up` **and** a top-level scope limitation — state plainly that
+the authenticated surface (IDOR, BFLA, business logic, multi-tenant isolation)
+could not be reached and only the unauthenticated surface was tested, so a
+reader never mistakes a clean unauthenticated run for a clean application.
 
 With two or more accounts in hand, run `reconnaissance/trust_boundary_mapping.md`
 next, still before the hunting waves — it turns the accounts you just
@@ -125,6 +251,16 @@ Pairs list, so IDOR/BFLA hunters start with which actor pairs to try
 instead of deciding by hand per candidate. It costs nothing beyond what
 provisioning already produced and re-runs cheaply if `broken_function_level_authorization.md`'s
 actor×action matrix fills in later.
+
+Once two or more actors have each been crawled/observed (per-actor `run_crawl_job`),
+also run **`query_cross_actor_access`** before dispatching the IDOR/BFLA hunters: a
+deterministic diff over the inventory's per-actor observations that auto-surfaces
+objects reached with a 2xx by more than one actor (cross-user/cross-tenant leads)
+and objects with a working isolation control (ready negative controls). Hand its
+candidates to the hunters as their starting worklist — it turns the richest
+black-box data into automatic leads instead of leaving the pattern for an agent to
+spot by eye. Every row is a lead, not a finding (`analysis/counterevidence.md`
+still gates).
 
 ## Reuse Recon and Triage Artifacts
 
@@ -139,6 +275,29 @@ recon already mapped is pure wasted spend. Only re-run a recon tool when
 the existing artifact is missing, stale for the specific host in question,
 or the subagent needs a probe recon didn't do (e.g. an authenticated crawl
 after login).
+
+## Run the Free Deterministic Passes
+
+Several high-recall checks are deterministic and nearly free — no model reasoning,
+and (for the passive one) no new traffic. They are easy to forget, so make them
+**explicit orchestration steps**, not optional extras, and **name them in the
+subagent tasks you write** — otherwise they get skipped even though the tools
+exist:
+
+- **`passive_scan`** — after recon, and again after each hunting wave. It inspects
+  the traffic every agent has ALREADY sent through the proxy and flags missing
+  security headers, cookie-flag gaps, permissive CORS, verbose errors, secrets in
+  responses, and reflected parameters — zero new requests. Route each lead to the
+  matching skill (`analysis/counterevidence.md` still gates). It finds nothing in
+  a scan where nobody calls it, so call it.
+- **`retire.js` on the crawled JS** (`retire --js --jspath <recon-js-dir>`) — flags
+  outdated front-end libraries with known CVEs, a high-frequency, eye-missed find.
+  Tell the recon / JS agent to run it (see `reconnaissance/asset_discovery.md`).
+- **`wapiti`** (standard/deep only, scoped) — a bounded active scan of the app's
+  own forms/params, complementary to `nuclei` (see `asset_discovery.md` Layer 4).
+- **`query_cross_actor_access`** — once two or more actors are observed, it diffs
+  their per-actor observations into automatic BOLA/BFLA candidates (see "Provision
+  Accounts Before Hunting" above).
 
 The `/workspace/recon/*` files are ephemeral (the sandbox is torn down at
 run end). The durable, cross-agent, **resume-surviving** endpoint record is
@@ -169,7 +328,7 @@ mapped.
 Once the vulnerability-hunting waves have reported, don't move straight to compiling the report. Individually low/medium findings and open leads routinely combine into something a program pays out at high/critical — a single bug is rarely the whole story, the chain is. Do this pass explicitly, as its own step, not as an afterthought while writing the summary:
 
 0. **Call `list_chain_candidates` first.** A zero-LLM-cost deterministic pass over every filed finding's `discloses`/`requires` fields (see `create_vulnerability_report`'s docstring) — a shared identifier name between one finding's `discloses` and another's `requires` is a candidate link, surfaced for you to verify, never a confirmed chain. Most findings won't have these fields set at all (they're optional, and only apply when a finding plainly exposes or plainly needs a reusable identifier), so an empty result narrows nothing — it just means step 1's own reading carries the full weight, same as before this tool existed.
-1. **Enumerate plausible chains** from the actual confirmed findings and `needs_follow_up`/open leads on this target — not hypothetical chains from other engagements. Start from whatever `list_chain_candidates` surfaced, then keep reading: look specifically for information disclosure leaking an identifier + IDOR consuming that identifier; open redirect + OAuth/OIDC token theft; self-XSS or low-impact XSS + CSRF delivering it to a victim; BFLA reaching a privileged endpoint + mass assignment escalating what that endpoint accepts; a leaked JS dev-flag/secret (see `reconnaissance/asset_discovery.md`'s JS deep-dive) plus the credential or route it unlocks; a race condition plus a business-logic invariant it lets you violate twice.
+1. **Enumerate plausible chains** from the actual confirmed findings and `needs_follow_up`/open leads on this target — not hypothetical chains from other engagements. Start from whatever `list_chain_candidates` surfaced, then keep reading: look specifically for information disclosure leaking an identifier + IDOR consuming that identifier; open redirect + OAuth/OIDC token theft; self-XSS or low-impact XSS + CSRF delivering it to a victim; BFLA reaching a privileged endpoint + mass assignment escalating what that endpoint accepts; a leaked JS dev-flag/secret (see `reconnaissance/asset_discovery.md`'s JS deep-dive) plus the credential or route it unlocks; a race condition plus a business-logic invariant it lets you violate twice; and — important for auth findings that look like dead ends — a **weak identity primitive** (an auth bypass that yields only an identity assertion / `userId` with no direct data-read) chained into real data exposure through a **write endpoint that trusts a client-supplied `userId`/identifier**, then reading the result back. A "no data-read primitive" conclusion is the *start* of this chain hunt, not the end: enumerate every write endpoint whose body carries an identifier (from the API contract — `custom/client_bundle_analysis.md`) and test whether the weak identity lets you write to, or read back, another principal's data.
 2. **Spawn a validation subagent per plausible chain** to attempt the end-to-end path with a real PoC — reusing the accounts/tokens in `/workspace/recon/` and the component findings already on record, not re-discovering them from scratch.
 3. **Report a validated chain as its own finding**, at the severity the *combined* impact earns (per `analysis/severity_calibration.md`), referencing every component bug by its existing report/coverage entry rather than restating them. The chain is the headline; the components are supporting evidence.
 4. **Do not elevate an unvalidated chain.** If the end-to-end path is not actually demonstrated, the component findings stand at their own individually-assessed severity and the chain goes into the report as a named hypothesis (what it would take to complete it) — not as a combined-severity finding. This is `analysis/counterevidence.md`'s discipline applied at the chain level: a plausible story is not evidence.
@@ -192,6 +351,28 @@ covered by any entry. Queue a subagent for whichever untested cells you
 judge are actually worth another look before finishing — the same
 dispatch pattern as the `needs_follow_up` rows above, not a rule to
 apply mechanically to every single cell it returns.
+
+For the family-coverage picture (black-box included), call
+**`list_coverage_gaps`**: it returns every unresolved matrix cell —
+applicable-but-not-tested, still-`unknown`, `blocked`/`deferred`/`in_progress`,
+stale-after-resume, and `missing`-capability. Queue a subagent for the cells
+worth another look, the same judged dispatch as above. The final report **must
+disclose** the remaining gaps (tested-cells vs gap-count): a scan is **never**
+reported "fully tested" while applicable work is unresolved. This is honest
+partial completion — report what was finished, what is blocked/deferred, and what
+is validated — not an endless completion gate.
+
+**Reconcile blocked clusters in ONE call, not family-by-family.** When a whole
+set of families is unreachable for the *same* reason — the common case is an
+SSO-only / no-session target where IDOR, BFLA, mass-assignment, upload, SSRF,
+stored-XSS, workflow and race are all blocked behind one missing session — do
+**not** spend dozens of `assess_coverage` calls documenting each cell one at a
+time with its own evidence ref at scan end. Call **`mark_families_blocked`** once
+with the shared prerequisite ("no MyGov session obtained") and let it block the
+whole cluster. That bookkeeping is budget that finds nothing; the single call
+records the honest gap and leaves your budget for hunting. Reserve individual
+`assess_coverage` for cells with a *distinct* outcome (a real `not_applicable`
+with its own evidence, a `tested` cell), not for a cluster sharing one blocker.
 
 ## Agent Architecture
 
@@ -275,6 +456,30 @@ Cap concurrent spawns to what the run's budget supports — a handful of
 well-scoped agents beats a dozen thin ones. When scope grows, extend an
 existing agent's mandate or queue the next wave after the current one
 reports, rather than fanning out further.
+
+**Serialize surfaces behind a shared rate limit — don't parallelize into a
+throttle.** When a surface is gated by a per-IP/per-egress rate limit (a login
+endpoint at 6/window, an API at 20/min — all your agents share one egress IP),
+running several agents against it at once makes them **starve each other**: they
+split the same tiny budget, each gets inconclusive 429s, and you burn turns
+circling rather than testing. Give that throttled surface to **one** agent with an
+explicit paced harness (fresh session per attempt, requests spaced past the window,
+429 = `blocked` not `ruled_out`), and let the *other* agents work unrelated,
+unthrottled surfaces in parallel. A single paced tester reaches a real verdict; N
+parallel testers on a 6/window endpoint reach only mutual starvation — the
+hundred-tool-call agent that records zero coverage is this failure, not bad luck.
+
+**Orchestrate in waves — don't poll.** You are the longest-lived, most
+expensive context in the scan: every `view_agent_graph` / `list_coverage` /
+`list_notes` cycle you run adds to *your* growing window, and doing it on a
+loop is a real, repeated cost. After spawning a wave, issue **one**
+`wait_for_agents` and react to what returns — do not spin a
+wait→check-graph→check-coverage→check-notes→wait loop. Read coverage and notes
+once, when a wave reports, not continuously while you wait. Reconcile coverage
+and chain findings in a single pass near the end (see "Reconcile Coverage
+Before Finishing" and "Chain Findings Before Finishing"), not repeatedly
+mid-run. Fewer, deliberate orchestration turns is the single cheapest thing you
+control.
 
 **Reading Agent ROI**
 

@@ -76,8 +76,15 @@ def output_limit(model: str) -> int:
 def count_tokens(model: str, text: str) -> int:
     """Token count for ``text`` under ``model``.
 
-    Falls back to UTF-8 byte length (a guaranteed upper bound) when LiteLLM
-    can't count, so budget checks stay conservative.
+    When LiteLLM can't count (a model/tokenizer it doesn't know — DeepSeek is a
+    real case), fall back to a ``chars/4`` estimate rather than raw UTF-8 byte
+    length. Byte length over-counts by ~4x for typical text, which would make the
+    budget check think the context is ~4x fuller than it is and fire compaction
+    far too often — every fire is an extra uncached summary LLM call, so on a
+    model that hits this fallback the old behaviour was a silent, recurring cost.
+    Under-counting is the safe direction here: a genuine overflow is caught by the
+    provider's context-length error and ``maybe_compact(force=True)`` (see
+    ``strix/llm/compaction.py``), so an occasional miss self-corrects.
     """
     if not text:
         return 0
@@ -86,4 +93,6 @@ def count_tokens(model: str, text: str) -> int:
 
         return int(litellm.token_counter(model=_lookup_key(model), text=text))
     except Exception:  # noqa: BLE001 - tokenizer may be unavailable for some models.
-        return len(text.encode("utf-8"))
+        # ~4 characters per token is the standard rough estimate for English-ish
+        # text; far closer than byte length, and overflow is recoverable.
+        return max(1, len(text) // 4)

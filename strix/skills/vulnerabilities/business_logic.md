@@ -119,6 +119,64 @@ Everything above works from a single session. The moment you hold two or more re
 - **Booking/reservation races (double-book, overbook)**: fire concurrent reservation requests from Account A and B for the same slot/seat/room/inventory unit — see `race_conditions.md` for the concurrency mechanics (HTTP/2 multiplexing, last-byte sync); this section is about *what* to race in a booking flow, that one is about *how*
 - **Collusion patterns**: one account performs an action whose benefit only the other consumes — Account A approves/reviews/vouches for something that benefits only Account B, a buyer (A) and seller (B) fake a transaction for a reward or rating boost, or an admin-adjacent action on A grants a privilege that only B redeems
 
+## Stateful Workflow Mutation (Black-Box, Dynamic)
+
+Single-request testing (the sqli/xss/authz executors, `parameter_mutation_testing.md`)
+cannot find the highest-value logic bugs, which live in the **sequence** of a
+multi-step flow — checkout, KYC, onboarding, approval, password-reset,
+subscription change. Those need the flow captured as an ordered set of requests,
+then the sequence itself mutated. There is no single executor for this; build it
+from the primitives you already have.
+
+**1. Capture the baseline flow.** Walk the full happy path once in `agent_browser`
+or the proxy. Snapshot each step's request with `import_captured_request` (or note
+each proxy request id) so you hold an ordered, replayable `[S1, S2, ... Sn]` with
+the real tokens/ids/state each step produced. Name the invariant the flow is meant
+to enforce (e.g. "payment must succeed before the order ships").
+
+**If you cannot get a valid baseline, that is the step to solve — not a reason to
+give up on the endpoint.** A write endpoint that returns `500`/generic error on
+every hand-built request almost always means your request is *malformed*, not that
+the logic is untestable. Do NOT record the whole class (price tampering, etc.) as
+"couldn't assess" until you've reconstructed a valid request: the client already
+builds a working one, so read it. Drive the real flow once in `agent_browser` and
+capture the exact request it sends; or read the client JS bundle
+(`/workspace/recon/js/*`) for the `fetch`/`axios`/`XHR` call — the precise field
+set, the server-expected types, and any client-computed field (e.g. a
+`billedAmount` the client derives). `custom/client_bundle_analysis.md` is the
+full procedure for reconstructing that request shape (and the whole API contract)
+from the bundle. Seed required ids/items from live data
+(`GET /menu/{code}`, `GET /table/{code}`, a real `restaurantId`). Only once you
+have a 200 baseline do you mutate from it — and that exact client-computed field
+is usually the highest-value thing to tamper.
+
+**2. Apply the sequence-mutation set** — replay via `repeat_request`/the proxy,
+driving ordering/parallelism from `python` when needed:
+
+- **Step skipping** — jump straight to `Sn` (finalize/confirm) without `S1..Sn-1`;
+  does the server re-check the prerequisites, or trust that you got here
+  legitimately? (The classic "payment step skipped" bug.)
+- **Reordering** — run `S3` before `S2`; call confirm before approve.
+- **Replay of a consumed step** — re-submit a one-time step (apply-coupon,
+  redeem, confirm) N times; is it idempotent? For the *parallel* version fire the
+  replay simultaneously (cross-link `race_conditions.md`).
+- **State tampering between steps** — change a value `S2` established (price,
+  quantity, role, status, recipient) before `S3` reads it; is it re-derived or
+  trusted? (Cross-link `parameter_mutation_testing.md` for the per-field engine.)
+- **Cross-actor step injection** — perform `S1..Sk` as actor A, hand A's flow
+  token/id to actor B to complete `Sk+1..Sn`; does step ownership bind to one
+  principal? (Cross-link `idor.md`.)
+- **Abandon-and-resume / stale token** — start the flow, let a step's token/window
+  expire or get superseded, then resume; is the stale state re-validated?
+
+**3. Classify against the named invariant, not the HTTP status** — a 200 on a
+skipped-payment finalize is the bug; a 200 on a correctly-rejected one is not.
+Each confirmed sequence bug still clears `analysis/counterevidence.md`'s bar and is
+scored on the real effect (free goods, skipped verification, cross-user action) per
+`analysis/severity_calibration.md`, never the mechanism. Record the tested sequence
+boundary with `record_endpoint_test`/`record_coverage` so a skipped-step pass on
+one flow isn't read as covering a sibling flow.
+
 ## Bypass Techniques
 
 - Content-type switching (JSON/form/multipart) to hit different code paths

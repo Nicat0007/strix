@@ -172,6 +172,14 @@ Do not assign Confidentiality Low merely because information helps reconnaissanc
 - Cross-tenant data disclosure through exports, caches, or mis-scoped signed URLs
 - Privacy/regulatory violations and business intelligence leakage
 
+**When you file a disclosure finding, set `discloses`** on
+`create_vulnerability_report` to the bare identifier names the response leaked
+(object IDs, tokens, emails, tenant/user refs, an internal key in a verbose
+error). That is what lets `list_chain_candidates` automatically link this leak
+to an IDOR/BFLA finding that `requires` the same identifier — the single most
+common black-box chain (leak → cross-object access). A leak you don't tag this
+way is invisible to the chaining pass.
+
 ## Pro Tips
 
 1. Start with artifacts (DVCS, backups, maps) before payloads; artifacts yield the fastest wins
@@ -181,6 +189,17 @@ Do not assign Confidentiality Low merely because information helps reconnaissanc
 5. Treat introspection and reflection as configuration findings across GraphQL/gRPC
 6. Mine observability endpoints last; they are noisy but high-yield in misconfigured setups
 7. Chain quickly to a concrete risk and stop—proof should be minimal and reversible
+
+## Passive Scan First — Free Leads From Captured Traffic
+
+Before (and while) hunting disclosure by hand, run **`passive_scan`**: it inspects
+responses already captured in the proxy and flags the bread-and-butter disclosure
+signals for free — missing/weak security headers, cookie-flag gaps, permissive
+CORS, verbose errors / stack traces, internal filesystem paths, and secret-shaped
+values in response bodies — with **no new requests**. Route each lead here (and
+the CORS ones to `cors_misconfiguration.md`), then confirm per
+`analysis/counterevidence.md`. It is the cheapest disclosure coverage there is,
+and a manual-only pass routinely misses what it catches — so call it, don't skip it.
 
 ## Summary
 

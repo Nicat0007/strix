@@ -214,6 +214,34 @@ and never invent data or claim extraction you did not perform.
 9. Validate mitigations with negative tests and code review; parameterize operators/lists correctly
 10. Document exact query shapes; defenses must match how the query is constructed, not assumptions
 
+## Stacked / Batched and Second-Order SQLi
+
+Two high-value shapes beyond the single in-line injection are easy to miss:
+
+- **Stacked / batched queries** — where the driver allows multiple statements,
+  a `;`-terminated payload runs a *second* statement (`; UPDATE ...`,
+  `; WAITFOR DELAY '0:0:10'` on MSSQL, stacked on PostgreSQL/`libpq`). A blind
+  context that *looks* read-only is often write-capable this way — fire a benign
+  stacked time-delay before concluding the sink is read-only.
+- **Second-order SQLi** — a value stored safely is later concatenated into a
+  query by a *different* endpoint/job (a report, a search, a batch) with no
+  re-escaping; it fires when that second query runs, not on write. Seed a
+  uniquely-tagged payload, then exercise every place the stored value is later
+  used (cross-link `second_order_injection.md`).
+
+A `403`/WAF is `blocked`, not `ruled_out` — see `vulnerabilities/waf_evasion.md`.
+
+## Blind-First — OOB Before You Conclude "No SQLi"
+
+A non-reflecting, error-swallowing endpoint is exactly where blind SQLi hides, so a
+clean response is not a clean result. Before closing an injectable-looking
+parameter, fire a **blind OOB / time probe first**: an OAST DNS/HTTP callback
+(`xp_dirtree` / `UTL_HTTP` / `LOAD_FILE` / `COPY ... PROGRAM` per engine) or a
+`SLEEP` / `pg_sleep` / `WAITFOR DELAY` differential. A callback or a reliable
+timing delta proves injection with zero reflected output — drive it with the
+concrete interactsh generate+poll workflow in `second_order_injection.md`. "No
+error, no reflection" is a reason to go blind, never a reason to close the param.
+
 ## Summary
 
 Modern SQLi succeeds where authorization and query construction drift from assumptions. Bind parameters everywhere, avoid dynamic identifiers, and validate at the exact boundary where user input meets SQL.

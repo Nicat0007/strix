@@ -152,6 +152,27 @@ For black-box testing, compare an ordinary operand with option-prefixed, delimit
 - On Windows, keep data in wide-character APIs and verify child-runtime parsing rules.
 - Enforce authorization again at the privileged operation selected by the CLI.
 
+## Flag-Injection Catalog (Common Wrapped Binaries)
+
+Argument injection bites when user input becomes an argv element of a trusted
+binary the app shells out to. The exploitable flags are binary-specific — the
+high-value ones:
+
+- **`curl`** — `-o /path` (write file), `-K file` (read config), `--upload-file`
+  (exfil), `file://`/`gopher://` (SSRF). An injected URL-ish arg is often SSRF.
+- **`tar`** — `--checkpoint-action=exec=<cmd>`, `-I <cmd>` (filter program) → RCE.
+- **`zip`/`7z`** — `--unzip-command`, `-TT` → command execution on extract.
+- **`git`** — `-c core.sshCommand=<cmd>`, `-c protocol.ext.allow=always` + `ext::`
+  remotes, `-u <cmd>` → RCE.
+- **`ffmpeg` / ImageMagick** — input `-`, `file:`/`http:`/`msl:` protocols → SSRF /
+  file read (ImageTragick).
+- **`find`** — `-exec <cmd> {} ;`; **`rsync`** — `-e <cmd>` / `--rsh`;
+  **`wget`** — `-O /path`, `--post-file`, `--use-askpass=<cmd>`.
+
+The lead is any value prefixed with `-`/`--` reaching the sink; test a benign flag
+(a help/version flag, or `-o /dev/null`) before an impactful one. A `403`/WAF is
+`blocked`, not `ruled_out` — see `vulnerabilities/waf_evasion.md`.
+
 ## Summary
 
 Argument injection is control of a trusted program's behavior through its argv or a parser reached from argv. Preserve parser boundaries in the model: list-form execution, command-string tokenization, Windows runtime conversion, option parsing, and response/config-file parsing are distinct stages with distinct exploit conditions.

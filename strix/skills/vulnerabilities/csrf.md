@@ -198,6 +198,17 @@ Cross-site request forgery abuses ambient authority (cookies, HTTP auth) across 
 6. Always try method overrides and parser differentials
 7. Combine with clickjacking when visual confirmations block CSRF
 
+## SameSite=Lax 2-Minute POST Grace Window
+
+A subtle, high-value gap: Chromium browsers send a `Lax`/`Lax-by-default` cookie on
+a **top-level cross-site POST** for a short window (~2 minutes) *after the cookie
+is set*. So a session cookie issued moments earlier — a fresh login, an OAuth
+callback, a just-opened tab — is still delivered on a cross-site form POST during
+that window, re-enabling classic CSRF against `Lax`-"protected" endpoints. Test it:
+trigger a fresh session, then within ~2 minutes auto-submit a cross-site top-level
+form POST and confirm the state change. Report the timing precondition honestly —
+it is a window, not permanent.
+
 ## Summary
 
 CSRF is eliminated only when state changes require a secret the attacker cannot supply and the server verifies the caller's origin. Tokens and Origin checks must hold across methods, content-types, and transports.

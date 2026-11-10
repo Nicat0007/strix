@@ -98,3 +98,7 @@ schema.graphql
 /.benchmarks/
 /references/
 /strix_runs_main/
+
+# Local Claude Code settings and operational engagement notes (never commit)
+.claude/
+instr.txt

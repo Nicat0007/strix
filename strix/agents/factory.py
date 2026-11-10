@@ -30,14 +30,33 @@ from strix.tools.agents_graph.tools import (
 from strix.tools.attack_surface.tools import (
     ingest_recon_endpoints,
     query_attack_surface,
+    query_cross_actor_access,
     record_endpoint,
     record_endpoint_test,
+)
+from strix.tools.authorization_executor.tools import run_authorization_test
+from strix.tools.captured_requests.tools import (
+    import_captured_request,
+    query_captured_requests,
+)
+from strix.tools.component_research.tools import (
+    query_component_research,
+    record_advisory_candidate,
+    record_component,
 )
 from strix.tools.coverage.tools import (
     check_route_coverage,
     list_coverage,
     record_coverage,
     update_coverage,
+)
+from strix.tools.coverage_matrix.tools import (
+    assess_coverage,
+    list_coverage_gaps,
+    mark_families_blocked,
+    next_coverage_task,
+    plan_coverage,
+    query_coverage_matrix,
 )
 from strix.tools.crawl_executor.tools import (
     list_crawl_jobs,
@@ -69,6 +88,7 @@ from strix.tools.output_store import bound_and_store, bound_text
 from strix.tools.proxy.tools import (
     list_requests,
     list_sitemap,
+    passive_scan,
     repeat_request,
     scope_rules,
     view_request,
@@ -82,6 +102,7 @@ from strix.tools.reporting.tool import (
     list_reports,
 )
 from strix.tools.respond.tool import respond_to_user
+from strix.tools.session_ingest.tools import ingest_session
 from strix.tools.sqli_executor.tools import run_sqli_test
 from strix.tools.thinking.tool import think
 from strix.tools.threat_model.tools import (
@@ -98,6 +119,7 @@ from strix.tools.todo.tools import (
     update_todo,
 )
 from strix.tools.web_search.tool import web_search
+from strix.tools.xss_executor.tools import run_xss_test
 
 
 if TYPE_CHECKING:
@@ -626,6 +648,7 @@ _BASE_TOOLS: tuple[Tool, ...] = (
     record_endpoint,
     ingest_recon_endpoints,
     query_attack_surface,
+    query_cross_actor_access,
     record_endpoint_test,
     run_crawl_job,
     list_crawl_jobs,
@@ -634,6 +657,20 @@ _BASE_TOOLS: tuple[Tool, ...] = (
     record_test_attempt,
     query_hypotheses,
     run_sqli_test,
+    run_authorization_test,
+    run_xss_test,
+    ingest_session,
+    plan_coverage,
+    assess_coverage,
+    mark_families_blocked,
+    query_coverage_matrix,
+    list_coverage_gaps,
+    next_coverage_task,
+    record_component,
+    record_advisory_candidate,
+    query_component_research,
+    import_captured_request,
+    query_captured_requests,
     query_negative_knowledge,
     record_negative_knowledge,
     query_file_summary,
@@ -653,6 +690,7 @@ _BASE_TOOLS: tuple[Tool, ...] = (
     list_sitemap,
     view_sitemap_entry,
     scope_rules,
+    passive_scan,
     list_mcps,
     describe_mcp,
     call_mcp,
@@ -720,6 +758,8 @@ def build_strix_agent(
     system_prompt_context: dict[str, Any] | None = None,
     extra_tools: Sequence[Tool] | None = None,
     instructions_override: str | None = None,
+    model: str | None = None,
+    model_settings: Any = None,
 ) -> SandboxAgent[Any]:
     """Build a SandboxAgent for either root or child use.
 
@@ -728,6 +768,12 @@ def build_strix_agent(
             when the selected backend cannot accept Responses custom tools.
         strict_tool_schemas: Send function tools as strict-schema tools. Off
             for routes that reject a toolset this size as strict.
+        model: Per-agent model name. ``None`` (default) lets the run's
+            ``RunConfig`` choose — the single-model path. A string engages
+            tiered routing (the run must then set ``RunConfig.model=None``).
+        model_settings: Per-agent ``ModelSettings`` used only in tiered mode
+            (``RunConfig.model_settings`` must be ``None`` for it to apply).
+            ``None`` keeps the SDK default so the single-model path is unchanged.
         extra_tools: Additional tools for this scan agent only, on top of any
             registered via ``register_agent_tools``.
         instructions_override: Use this verbatim as the system prompt instead
@@ -772,12 +818,18 @@ def build_strix_agent(
         is_whitebox,
     )
 
+    # Only forward model_settings when explicitly given (tiered mode); passing
+    # None would clobber SandboxAgent's own default and break the single-model
+    # path, where RunConfig supplies the settings instead.
+    agent_kwargs: dict[str, Any] = {}
+    if model_settings is not None:
+        agent_kwargs["model_settings"] = model_settings
     return SandboxAgent(
         name=name,
         instructions=instructions,
         tools=tools,
         tool_use_behavior=_finish_tool_use_behavior,
-        model=None,
+        model=model,
         capabilities=[
             Filesystem(
                 configure_tools=_make_filesystem_configurator(
@@ -792,6 +844,7 @@ def build_strix_agent(
                 ),
             ),
         ],
+        **agent_kwargs,
     )
 
 
@@ -804,6 +857,8 @@ def make_child_factory(
     chat_completions_tools: bool = False,
     strict_tool_schemas: bool = True,
     system_prompt_context: dict[str, Any] | None = None,
+    model: str | None = None,
+    model_settings: Any = None,
 ) -> Any:
     """Return the runner-owned builder used by ``spawn_child_agent``.
 
@@ -824,6 +879,8 @@ def make_child_factory(
             chat_completions_tools=chat_completions_tools,
             strict_tool_schemas=strict_tool_schemas,
             system_prompt_context=system_prompt_context,
+            model=model,
+            model_settings=model_settings,
         )
 
     return _factory

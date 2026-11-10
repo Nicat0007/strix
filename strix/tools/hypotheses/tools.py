@@ -39,6 +39,7 @@ import json
 import logging
 import tempfile
 import threading
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -87,6 +88,32 @@ ATTEMPT_RESULT_STATUSES: tuple[str, ...] = (
 PENDING_STATUSES: tuple[str, ...] = (
     STATUS_UNTESTED, STATUS_TESTING, STATUS_NEEDS_VALIDATION, STATUS_BLOCKED,
 )
+
+#: Cumulative per-hypothesis attempt budget within ONE run, shared by the
+#: targeted executors (sqli #4, authorization #5). A reservation == one
+#: expensive tool invocation (one sqlmap run / one actor-replay comparison set),
+#: NOT a cheap read. Durable (persisted in this hypothesis's entry), atomic (the
+#: module RLock serializes reserve/settle), and preserved across ``--resume``.
+#:
+#: BOUNDARY: the ledger is an in-process RLock over a single run-scoped JSON file.
+#: It is correct for concurrent threads/coroutines in ONE host process. Two
+#: separate ``strix`` processes sharing the same run directory are NOT supported
+#: — they would race the file (last writer wins). One run == one host process.
+DEFAULT_ATTEMPT_BUDGET = 5
+#: Reservation slot lifecycle. A slot consumes budget UNLESS it was released by
+#: cancellation. ``abandoned`` = still ``reserved`` when a prior process died
+#: mid-attempt (reconciled on hydrate); it consumes budget, conservatively, so a
+#: crash-retry loop cannot burn attempts without bound.
+SLOT_RESERVED = "reserved"
+SLOT_COMPLETED = "completed"
+SLOT_FAILED = "failed"
+SLOT_CANCELLED = "cancelled"
+SLOT_ABANDONED = "abandoned"
+#: States that count against the cumulative cap (cancellation releases its slot).
+_BUDGET_CONSUMING: frozenset[str] = frozenset({
+    SLOT_RESERVED, SLOT_COMPLETED, SLOT_FAILED, SLOT_ABANDONED,
+})
+_SETTLE_STATES: frozenset[str] = frozenset({SLOT_COMPLETED, SLOT_FAILED, SLOT_CANCELLED})
 
 _LABELS: frozenset[str] = frozenset({"high", "medium", "low"})
 _BUCKETS: frozenset[str] = frozenset({"p0", "p1", "p2", "p3"})
@@ -144,6 +171,16 @@ def hydrate_hypotheses_from_disk(state_dir: Path) -> None:
                 for ev in entry.get("evidence", []):
                     if ev.get("resolved_state") == RESOLVED:
                         ev["resolved_state"] = RESOLVED_STALE
+                # A reservation still 'reserved' means the prior process died
+                # mid-attempt — account for it as 'abandoned' (keeps consuming the
+                # budget, so a resume loop cannot silently re-reserve forever).
+                budget = entry.get("attempt_budget")
+                if isinstance(budget, dict):
+                    for slot in budget.get("slots", []):
+                        if isinstance(slot, dict) and slot.get("state") == SLOT_RESERVED:
+                            slot["state"] = SLOT_ABANDONED
+                            slot["settled_at"] = _now()
+                            slot["abandoned_on_resume"] = True
                 _store[key] = entry
         logger.info("hypothesis worklist hydrated from %s (%d)", _path, len(_store))
 
@@ -515,6 +552,129 @@ def _record_attempt_impl(
 
 
 # --------------------------------------------------------------------------- #
+# Cumulative attempt budget — durable, atomic reservations (shared by executors)
+# --------------------------------------------------------------------------- #
+
+
+def _budget_used_locked(entry: dict[str, Any]) -> int:
+    slots = entry.get("attempt_budget", {}).get("slots", [])
+    return sum(1 for s in slots if s.get("state") in _BUDGET_CONSUMING)
+
+
+def reserve_attempt(
+    hypothesis_id: str, *, tool: str, max_attempts: int | None = None
+) -> dict[str, Any]:
+    """Atomically reserve ONE cumulative attempt slot for a hypothesis in this run.
+
+    An executor calls this before an expensive tool run. Returns
+    ``{reserved: True, reservation_id, used, max, remaining}`` when a slot was
+    taken, or ``{reserved: False, reason, used, max, remaining: 0}`` when the
+    cumulative budget is exhausted — the caller must NOT run the tool then. The
+    reservation is persisted immediately (survives ``--resume``) and taken under
+    the module lock so concurrent callers for the same hypothesis cannot exceed
+    the cap. See ``DEFAULT_ATTEMPT_BUDGET`` for the single-host-process boundary.
+    """
+    hid = (hypothesis_id or "").strip()
+    cap = max(1, int(max_attempts or DEFAULT_ATTEMPT_BUDGET))
+    with _lock:
+        entry = _store.get(hid)
+        if entry is None:
+            return {"success": False, "error": f"No hypothesis {hid!r}"}
+        budget = entry.setdefault("attempt_budget", {"max": cap, "slots": []})
+        # Stable per hypothesis: never silently shrink a cap already in effect.
+        budget["max"] = max(int(budget.get("max", cap)), cap)
+        used = _budget_used_locked(entry)
+        if used >= budget["max"]:
+            return {"success": True, "reserved": False, "reason": "attempt budget exhausted",
+                    "used": used, "max": budget["max"], "remaining": 0}
+        rid = uuid.uuid4().hex[:12]
+        budget["slots"].append({
+            "id": rid, "tool": (tool or "").strip()[:60],
+            "state": SLOT_RESERVED, "reserved_at": _now(),
+        })
+        entry["updated_at"] = _now()
+        _persist_locked()
+        used_after = _budget_used_locked(entry)
+        return {"success": True, "reserved": True, "reservation_id": rid,
+                "used": used_after, "max": budget["max"],
+                "remaining": budget["max"] - used_after}
+
+
+def mark_dispatched(hypothesis_id: str, reservation_id: str) -> dict[str, Any]:
+    """Persist that a reservation has begun sending traffic, BEFORE the first
+    request. After this point a cancellation must CONSUME the attempt (settle
+    failed), never release it — and because the slot is already ``reserved`` (and
+    becomes ``abandoned`` on resume), a crash mid-dispatch cannot refund the
+    budget. Idempotent."""
+    hid = (hypothesis_id or "").strip()
+    with _lock:
+        entry = _store.get(hid)
+        if entry is None:
+            return {"success": False, "error": f"No hypothesis {hid!r}"}
+        for slot in entry.get("attempt_budget", {}).get("slots", []):
+            if slot.get("id") == reservation_id:
+                slot["dispatched"] = True
+                slot["dispatched_at"] = _now()
+                entry["updated_at"] = _now()
+                _persist_locked()
+                return {"success": True, "dispatched": True}
+        return {"success": False, "error": f"no reservation {reservation_id!r}"}
+
+
+def settle_attempt(hypothesis_id: str, reservation_id: str, *, state: str) -> dict[str, Any]:
+    """Settle a reservation: ``completed`` / ``failed`` / ``cancelled``.
+
+    ``completed`` and ``failed`` both consume the slot (the tool ran and sent
+    traffic — the distinction is explicit accounting, not budget relief).
+    ``cancelled`` RELEASES the slot (it no longer counts) but is kept in the
+    ledger so a cancelled attempt is still accounted. Idempotent on an already
+    settled slot."""
+    hid = (hypothesis_id or "").strip()
+    final = (state or "").strip().lower()
+    if final not in _SETTLE_STATES:
+        return {"success": False,
+                "error": f"state must be one of {sorted(_SETTLE_STATES)}"}
+    with _lock:
+        entry = _store.get(hid)
+        if entry is None:
+            return {"success": False, "error": f"No hypothesis {hid!r}"}
+        for slot in entry.get("attempt_budget", {}).get("slots", []):
+            if slot.get("id") == reservation_id:
+                already = slot.get("state") in _SETTLE_STATES and slot.get("state") != SLOT_RESERVED
+                # Invariant: a dispatched slot (traffic may already have been sent)
+                # can never be RELEASED. A cancel after dispatch is coerced to
+                # `failed` so the budget is consumed regardless of caller behaviour.
+                coerced = final == SLOT_CANCELLED and bool(slot.get("dispatched"))
+                effective = SLOT_FAILED if coerced else final
+                slot["state"] = effective
+                slot["settled_at"] = _now()
+                entry["updated_at"] = _now()
+                _persist_locked()
+                used = _budget_used_locked(entry)
+                mx = int(entry["attempt_budget"]["max"])
+                return {"success": True, "settled": effective, "already_settled": already,
+                        "coerced_dispatched_cancel": coerced,
+                        "used": used, "max": mx, "remaining": mx - used}
+        return {"success": False, "error": f"no reservation {reservation_id!r}"}
+
+
+def budget_status(hypothesis_id: str) -> dict[str, Any] | None:
+    """Read-only budget snapshot for a hypothesis, or None if unknown."""
+    with _lock:
+        entry = _store.get((hypothesis_id or "").strip())
+        if entry is None:
+            return None
+        budget = entry.get("attempt_budget")
+        if not isinstance(budget, dict):
+            return {"max": DEFAULT_ATTEMPT_BUDGET, "used": 0,
+                    "remaining": DEFAULT_ATTEMPT_BUDGET, "slots": []}
+        used = _budget_used_locked(entry)
+        mx = int(budget.get("max", DEFAULT_ATTEMPT_BUDGET))
+        return {"max": mx, "used": used, "remaining": mx - used,
+                "slots": [dict(s) for s in budget.get("slots", [])]}
+
+
+# --------------------------------------------------------------------------- #
 # Query / projection
 # --------------------------------------------------------------------------- #
 
@@ -538,6 +698,11 @@ def _public_hypothesis(entry: dict[str, Any]) -> dict[str, Any]:
     view["evidence_truncated"] = len(evidence) > _EVIDENCE_RETURNED
     view["attempts"] = attempts[-_ATTEMPTS_RETURNED:]
     view["attempt_count"] = len(attempts)
+    budget = entry.get("attempt_budget")
+    if isinstance(budget, dict):
+        used = _budget_used_locked(entry)
+        mx = int(budget.get("max", DEFAULT_ATTEMPT_BUDGET))
+        view["attempt_budget"] = {"max": mx, "used": used, "remaining": mx - used}
     # A quick readable flag for downstream: does any attached request need a
     # (re)capture/revalidation before it can be replayed?
     view["needs_replay_evidence"] = any(

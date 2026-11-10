@@ -205,6 +205,16 @@ java -jar ysoserial.jar URLDNS "http://$(interactsh-client -json | jq -r .host)"
 
 Confirm the sink with a callback (`URLDNS` / interactsh OAST) before firing a command-exec chain, and match the chain to the fingerprinted library version — the wrong chain just adds noise.
 
+## Block Handling
+
+A serialized-blob endpoint returning `403`/`406`/WAF is `blocked`, not
+`ruled_out`. The blob's encoding is the lever: re-base64 with different padding,
+gzip/deflate it if the sink accepts compressed input, switch the transport
+(cookie ↔ body ↔ header), and lead with a **blind** `URLDNS`/callback gadget (no
+reflected output to trip output-based rules). Work the ladder in
+`vulnerabilities/waf_evasion.md` (`load_skill(["waf_evasion"])`) before concluding
+the gadget failed on the server rather than at the edge.
+
 ## Summary
 
 Treat every deserialization of untrusted data as critical. Safe patterns use JSON schema validation without type polymorphism, `yaml.safe_load`, signed encrypted tokens, or no custom serialization at all. Prove impact with callback or bounded execution — not just error stack traces.

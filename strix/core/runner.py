@@ -259,12 +259,31 @@ async def run_strix_scan(
     if not strict_tool_schemas:
         logger.info("Sending non-strict tool schemas: %s caps strict tools", resolved_model)
 
+    # Opt-in tiered routing: a stronger model for the ROOT orchestrator, the
+    # cheaper ``resolved_model`` for every child hunter. Unset or equal => a
+    # single-model run, byte-identical to before. The SDK's ``RunConfig.model``
+    # overrides every agent's own model, so tiered mode leaves it None and gives
+    # each agent its own model + model_settings; per-model tool-schema flags
+    # (chat-completions / strict) are recomputed for the root model.
+    root_model = (settings.llm.root_model or "").strip() or resolved_model
+    tiered_models = root_model != resolved_model
+    if tiered_models:
+        logger.info("Tiered models: root=%s, children=%s", root_model, resolved_model)
+        root_chat_completions_tools = uses_chat_completions_tool_schema(root_model, settings)
+        root_strict_tool_schemas = supports_strict_tool_schemas(root_model)
+    else:
+        root_chat_completions_tools = chat_completions_tools
+        root_strict_tool_schemas = strict_tool_schemas
+
     if coordinator is None:
         coordinator = AgentCoordinator()
     coordinator.set_snapshot_path(agents_path)
 
     from strix.tools.attack_surface.tools import hydrate_attack_surface_from_disk
+    from strix.tools.captured_requests.tools import hydrate_captured_requests_from_disk
+    from strix.tools.component_research.tools import hydrate_component_research_from_disk
     from strix.tools.coverage.tools import hydrate_coverage_from_disk
+    from strix.tools.coverage_matrix.tools import hydrate_coverage_matrix_from_disk
     from strix.tools.crawl_executor.tools import hydrate_crawl_jobs_from_disk
     from strix.tools.file_context_cache.tools import hydrate_file_context_cache_from_disk
     from strix.tools.hypotheses.tools import hydrate_hypotheses_from_disk
@@ -289,6 +308,15 @@ async def run_strix_scan(
     # Scoped to this run's own state_dir, unlike negative_knowledge's fixed
     # cross-scan path — see strix/tools/file_context_cache/tools.py.
     hydrate_file_context_cache_from_disk(state_dir)
+    # Durable captured-request snapshots (Strix-owned opaque refs), run-scoped.
+    # On resume, every capture is flagged stale and must be revalidated (tool).
+    hydrate_captured_requests_from_disk(state_dir)
+    # Durable per-surface x per-family coverage matrix, run-scoped. On resume,
+    # planning is preserved and in-flight/attempted cells are flagged stale.
+    hydrate_coverage_matrix_from_disk(state_dir)
+    # Durable component/version observations + advisory research, run-scoped. On
+    # resume, prior version fingerprints are flagged for re-verification.
+    hydrate_component_research_from_disk(state_dir)
     # Cross-scan store, fixed path (not this run's state_dir) — see
     # strix/tools/negative_knowledge/tools.py. Skipped entirely when
     # disabled so a run against confidential code never even reads the
@@ -377,7 +405,7 @@ async def run_strix_scan(
         # skill is injected into the root agent's set here, before it is built.
         skills.extend(s for s in domain_matched_skills(scan_config) if s not in skills)
         root_task = build_root_task(scan_config)
-        model_settings = make_model_settings(
+        child_model_settings = make_model_settings(
             settings.llm.reasoning_effort,
             model_name=resolved_model,
             force_required_tool_choice=settings.llm.force_required_tool_choice,
@@ -385,10 +413,24 @@ async def run_strix_scan(
             prompt_cache=settings.llm.prompt_cache,
             extra_headers=settings.llm.extra_headers,
         )
+        root_model_settings = (
+            make_model_settings(
+                settings.llm.reasoning_effort,
+                model_name=root_model,
+                force_required_tool_choice=settings.llm.force_required_tool_choice,
+                request_timeout=settings.llm.timeout,
+                prompt_cache=settings.llm.prompt_cache,
+                extra_headers=settings.llm.extra_headers,
+            )
+            if tiered_models
+            else child_model_settings
+        )
         run_config = RunConfig(
-            model=resolved_model,
+            # Tiered: None so each agent's own model/model_settings apply (the SDK
+            # would otherwise override them). Single-model: the shared default.
+            model=None if tiered_models else resolved_model,
             model_provider=StrixProvider(),
-            model_settings=model_settings,
+            model_settings=None if tiered_models else child_model_settings,
             sandbox=SandboxRunConfig(client=bundle["client"], session=bundle["session"]),
             trace_include_sensitive_data=False,
             # A hallucinated tool name is a recoverable model mistake, not a scan-ending
@@ -397,6 +439,7 @@ async def run_strix_scan(
         )
         hooks = ReportUsageHooks(
             model=resolved_model,
+            root_model=root_model if tiered_models else None,
             max_budget_usd=max_budget_usd,
             max_turns=max_turns,
             interactive=interactive,
@@ -504,10 +547,14 @@ async def run_strix_scan(
             is_whitebox=is_whitebox,
             is_diff_scoped=is_diff_scoped,
             interactive=interactive,
-            chat_completions_tools=chat_completions_tools,
-            strict_tool_schemas=strict_tool_schemas,
+            chat_completions_tools=root_chat_completions_tools,
+            strict_tool_schemas=root_strict_tool_schemas,
             system_prompt_context=root_context,
             instructions_override=root_instructions,
+            # Tiered only: give the root its own (stronger) model + settings;
+            # single-model runs pass None and inherit the shared RunConfig.
+            model=root_model if tiered_models else None,
+            model_settings=root_model_settings if tiered_models else None,
         )
 
         if not is_resume:
@@ -527,6 +574,10 @@ async def run_strix_scan(
             chat_completions_tools=chat_completions_tools,
             strict_tool_schemas=strict_tool_schemas,
             system_prompt_context=scope_context,
+            # Tiered only: children run the cheaper model explicitly; single-model
+            # runs pass None and inherit the shared RunConfig default.
+            model=resolved_model if tiered_models else None,
+            model_settings=child_model_settings if tiered_models else None,
         )
 
         async def spawn_child_agent(**kwargs: Any) -> dict[str, Any]:

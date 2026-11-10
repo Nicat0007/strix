@@ -41,10 +41,12 @@ import pytest
 
 from strix.tools.attack_surface.tools import hydrate_attack_surface_from_disk
 from strix.tools.hypotheses.tools import (
+    DEFAULT_ATTEMPT_BUDGET,
     STATUS_BLOCKED,
     STATUS_NEEDS_VALIDATION,
     STATUS_TESTING,
     _create_impl,
+    budget_status,
     hydrate_hypotheses_from_disk,
     lookup_hypothesis,
 )
@@ -463,18 +465,54 @@ class _HangingTransport(FakeTransport):
 
 
 @pytest.mark.asyncio
-async def test_cancellation_scrubs_and_records_blocked() -> None:
+async def test_cancellation_after_dispatch_scrubs_records_blocked_and_consumes_slot() -> None:
+    # sqlmap hangs mid-run — dispatch was marked before it, so this cancel is
+    # POST-dispatch: the attempt is CONSUMED (never refunded), because requests
+    # may already have been sent.
     hid = _sqli_hypothesis()
     t = _HangingTransport()
     task = asyncio.create_task(_run(t, hid))
     await asyncio.wait_for(t.started.wait(), timeout=10)
     assert any(k.endswith(".req") for k in t.files)
+    assert budget_status(hid)["used"] == 1  # reserved + dispatched before the run
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
     assert not any(k.endswith((".req", ".log")) for k in t.files)
     assert any(e[0] == "pkill" for e in t.execs)
     assert lookup_hypothesis(hid)["status"] == STATUS_BLOCKED
+    # Post-dispatch cancel CONSUMES the attempt — a refund would let a cancelled
+    # (possibly traffic-sending) run be retried for free.
+    assert budget_status(hid)["used"] == 1
+
+
+@pytest.mark.asyncio
+async def test_attempt_budget_is_cumulative_across_calls() -> None:
+    hid = _sqli_hypothesis()
+    for _ in range(DEFAULT_ATTEMPT_BUDGET):
+        r = await _run(FakeTransport(sqlmap_stdout=_CLEAN), hid)
+        assert r["ran_sqlmap"] is True
+    # The next call for the SAME hypothesis is refused — budget is cumulative.
+    exhausted = await _run(FakeTransport(sqlmap_stdout=_INJECTABLE), hid)
+    assert exhausted["ran_sqlmap"] is False
+    assert exhausted["result_status"] == STATUS_BLOCKED
+    assert "budget exhausted" in exhausted["outcome"]
+    assert budget_status(hid)["remaining"] == 0
+
+
+@pytest.mark.asyncio
+async def test_concurrent_calls_do_not_exceed_budget() -> None:
+    hid = _sqli_hypothesis()
+    # Fire more concurrent runs than the budget; reservations are atomic so at
+    # most DEFAULT_ATTEMPT_BUDGET actually run, the rest are refused.
+    results = await asyncio.gather(*[
+        _run(FakeTransport(sqlmap_stdout=_CLEAN), hid) for _ in range(DEFAULT_ATTEMPT_BUDGET + 3)
+    ])
+    ran = sum(1 for r in results if r.get("ran_sqlmap"))
+    refused = sum(1 for r in results if not r.get("ran_sqlmap")
+                  and "budget exhausted" in r.get("outcome", ""))
+    assert ran == DEFAULT_ATTEMPT_BUDGET
+    assert refused == 3
 
 
 # --------------------------------------------------------------------------- #

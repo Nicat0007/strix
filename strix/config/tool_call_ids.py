@@ -11,11 +11,65 @@ valid for any provider.
 
 from __future__ import annotations
 
+import re
 from collections import defaultdict, deque
 from typing import Any
 from uuid import uuid4
 
 from openai.types.responses import ResponseFunctionToolCall
+
+
+# DeepSeek (and some other OpenAI-compatible routes) occasionally leak their
+# native control tokens into assistant *content* — e.g. ``<｜end▁of▁thinking｜>``
+# or tool-call markup like ``<｜｜DSML｜｜ invoke name="...">``. The call itself
+# still executes (it also arrives in the structured tool_calls field), but the
+# leaked markup lands in history, where it (1) wastes tokens on every later turn,
+# and (2) invites the model to imitate the garbage and emit more malformed calls.
+# These tags are identifiable by the full-width vertical bar U+FF5C (｜), which
+# never legitimately appears inside an angle-bracket tag in security-testing text,
+# so stripping any such tag is safe for every provider.
+_LEAKED_CONTROL_TAG_RE = re.compile(r"<[^<>]*｜[^<>]*>")
+
+
+def strip_leaked_control_tokens(text: str) -> str:
+    """Remove leaked provider control-token markup (see ``_LEAKED_CONTROL_TAG_RE``)."""
+    if "｜" not in text:
+        return text
+    return _LEAKED_CONTROL_TAG_RE.sub("", text)
+
+
+def _clean_content(content: Any) -> tuple[Any, bool]:
+    if isinstance(content, str):
+        cleaned = strip_leaked_control_tokens(content)
+        return cleaned, cleaned != content
+    if isinstance(content, list):
+        changed = False
+        out: list[Any] = []
+        for block in content:
+            if isinstance(block, dict) and isinstance(block.get("text"), str):
+                new_text = strip_leaked_control_tokens(block["text"])
+                if new_text != block["text"]:
+                    block = {**block, "text": new_text}
+                    changed = True
+            out.append(block)
+        return out, changed
+    return content, False
+
+
+def strip_leaked_markup_from_items(items: list[Any]) -> list[Any]:
+    """Return ``items`` with leaked control-token markup removed from message
+    content. Returns the same list object when nothing changed, so callers can
+    cheaply skip a rebuild."""
+    changed = False
+    out: list[Any] = []
+    for item in items:
+        if isinstance(item, dict) and "content" in item:
+            cleaned, item_changed = _clean_content(item["content"])
+            if item_changed:
+                item = {**item, "content": cleaned}
+                changed = True
+        out.append(item)
+    return out if changed else items
 
 
 def new_call_id() -> str:
@@ -77,9 +131,11 @@ def dedupe_history_call_ids(items: list[Any]) -> tuple[list[Any], bool]:
 
 def dedupe_input(model_input: str | list[Any]) -> str | list[Any]:
     if isinstance(model_input, str):
-        return model_input
+        return strip_leaked_control_tokens(model_input)
     rebuilt, changed = dedupe_history_call_ids(model_input)
-    return rebuilt if changed else model_input
+    # Strip leaked provider control-token markup from history content on the way
+    # in, so the model never re-reads (or imitates) its own leaked markup.
+    return strip_leaked_markup_from_items(rebuilt if changed else model_input)
 
 
 class TurnCallIdRewriter:

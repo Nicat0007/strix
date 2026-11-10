@@ -226,6 +226,10 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
+# Coverage report reads the coverage-matrix/component-research stores via lazy
+# in-function imports to avoid any import cycle and because those stores are
+# optional at report-build time.
+"strix/report/coverage.py" = ["PLC0415"]
 # Test doubles use fixture tokens/passwords and match a callee signature whose
 # args they intentionally ignore.
 "tests/test_viewer_auth.py" = ["S105", "S106", "ARG001"]
@@ -250,6 +254,14 @@ ignore = [
 # Transport/provider fakes match a callee signature whose args they ignore
 # (ARG001/ARG002); the disposable app is DELIBERATELY SQL-injectable (S608).
 "tests/test_sqli_executor.py" = ["ARG001", "ARG002", "S608"]
+# Injected retrieve/replay provider fakes match a signature whose args they ignore.
+"tests/test_authorization_executor.py" = ["ARG001"]
+# Injected http/browser provider fakes ignore some args; _embed branches by context.
+"tests/test_xss_executor.py" = ["ARG001", "PLR0911"]
+# Opt-in live sandbox integration: strix runtime imported lazily inside the gated
+# test (PLC0415); the embedded fixture server source has long lines (E501); docker
+# invoked by name (S607).
+"tests/test_xss_browser_integration.py" = ["PLC0415", "E501", "S607"]
 # MCP connection request in a test carries a dummy bearer token.
 "tests/test_runner_root_prompt.py" = ["S106"]
 # Harness runs the skill's embedded recon scripts via subprocess with trusted,
@@ -292,6 +304,24 @@ ignore = [
 # crawl_executor transport helpers and hypotheses internals rather than
 # duplicating them (SLF001).
 "strix/tools/sqli_executor/tools.py" = ["PLR0917", "SLF001"]
+# run_authorization_test's parameters ARE the agent-facing JSON schema; the
+# executor reuses sqli_executor/crawl_executor/hypotheses internals (scope,
+# classification, actor-session resolution, budget) rather than duplicating them.
+"strix/tools/authorization_executor/tools.py" = ["PLR0917", "SLF001"]
+# import_captured_request's params ARE its agent-facing schema (can't collapse to
+# a dataclass); SLF001 is the deliberate reuse of attack_surface's redactor.
+"strix/tools/captured_requests/tools.py" = ["PLR0917", "SLF001"]
+# XSS executor: run_xss_test's params are its agent-facing schema (PLR0917); the
+# orchestration is inherently branchy (PLR0911/0912/0915); SLF001 is deliberate
+# reuse of sqli_executor/hypotheses/attack_surface internals (scope, budget,
+# redaction) rather than duplicating them.
+"strix/tools/xss_executor/tools.py" = ["PLR0911", "PLR0912", "PLR0915", "PLR0917", "SLF001"]
+# Coverage matrix: assessment tools expose many optional fields as their schema
+# (PLR0913/0917); the planner reads attack_surface/hypotheses host-side (SLF001).
+"strix/tools/coverage_matrix/tools.py" = ["PLR0911", "PLR0913", "PLR0917", "SLF001"]
+# Component research: record_* tools expose the advisory fields as their schema
+# (PLR0913/0917); SLF001 is the deliberate reuse of attack_surface's redactor.
+"strix/tools/component_research/tools.py" = ["PLR0911", "PLR0913", "PLR0917", "SLF001"]
 # Custom Docker subclass duplicates parent body; some imports are for annotations.
 # Backend factories import their backend's deps lazily so deployments
 # that pick a different backend don't need every backend's libs installed.

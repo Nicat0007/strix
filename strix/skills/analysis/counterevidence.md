@@ -142,6 +142,26 @@ Negative controls make a `ruled_out` much stronger: send the payload that
 benign variant succeeds. That distinguishes "the control works" from "the
 endpoint is broken/unreachable for unrelated reasons".
 
+A WAF / `403` block is the textbook case of the "not just that the response was
+a 403" rule above: it is `blocked`, not `ruled_out`. Before closing the surface,
+work `vulnerabilities/waf_evasion.md`'s escalation ladder
+(`load_skill(["waf_evasion"])`) — encoding, syntax variants, request-shape,
+header/edge and origin bypass — and only close it once the ladder has failed
+*and* a benign control proves the endpoint itself is still reachable.
+
+**A control that engages only after your traffic accumulates is NOT proof of
+absence** — this is the trap that most often produces a false `ruled_out` on
+auth/OTP/login endpoints. A per-IP throttle that starts returning `401 Invalid`
+(or `403`) for *every* input, including a genuinely valid one, looks exactly like
+a working security control but is not one. If a bypass/payload *worked earlier*
+and now returns a uniform failure, the endpoint is rate-limiting you, not
+rejecting the attack. Before concluding "the bypass doesn't work" / "there's a
+lockout": pace attempts well apart (≥45s), cool down (~300s) between bursts, and
+re-test from a clean state — if the behaviour returns, your earlier "failure" was
+the throttle, and a real attacker simply paces below it. On an auth endpoint a
+`401`/`403` is *never* by itself evidence the bypass is absent; confirm with a
+positive control under paced conditions.
+
 ## Negative Knowledge — A Prior From a Past Scan, Never a Skip
 
 `record_coverage`'s `ruled_out`/`no_issue_found` entries live only in this

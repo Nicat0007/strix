@@ -386,6 +386,12 @@ def _prompt_cache_extra_args(model_name: str) -> dict[str, Any] | None:
     return {"cache_control_injection_points": points}
 
 
+# Upper bound on the serialized parent transcript copied into a child's first
+# (uncached) message when inherit_context=True. ~24k chars ≈ 6k tokens of the
+# most-recent tail; older context is dropped (it lives in the shared stores).
+_MAX_INHERITED_CONTEXT_CHARS = 24_000
+
+
 def child_initial_input(
     *,
     name: str,
@@ -408,6 +414,16 @@ def child_initial_input(
             ensure_ascii=False,
             default=str,
         )
+        # Even an explicit inherit_context=True must not dump an unbounded,
+        # ever-growing transcript into the child's (uncached) first message —
+        # keep the most-recent tail, which is where the relevant context is, and
+        # note the truncation. Durable state lives in the shared stores anyway.
+        if len(rendered) > _MAX_INHERITED_CONTEXT_CHARS:
+            rendered = (
+                "...[older parent context truncated; query the shared stores "
+                "(attack_surface / threat_model / recon / hypotheses) for durable "
+                f"state]...\n{rendered[-_MAX_INHERITED_CONTEXT_CHARS:]}"
+            )
         parts.append(
             "== Inherited context from parent (background only) ==\n"
             f"{rendered}\n"

@@ -189,6 +189,18 @@ Upload surfaces are high risk: server-side execution (RCE), stored XSS, malware 
 10. Document full pipeline behavior per asset type
 11. Reproduce detector/consumer mismatches on the deployed library versions; OS packages and language bindings may ship different limits
 
+## The Upload Is a Stored Payload — Confirm the Sink
+
+An uploaded SVG/HTML/file is a **stored** payload: a `<script>`-bearing SVG served
+`image/svg+xml` or `text/html`, or a filename rendered in an admin/moderation view,
+executes at the **view** sink, not on upload. A clean upload response proves
+storage, not execution — treat it as second-order and confirm the sink
+(`second_order_injection.md`): view the file as its intended consumer (another
+user, staff), or if that view is unreachable embed an OOB beacon that fires when it
+renders. A `403`/WAF on the upload (extension / MIME / magic-byte filter) is
+`blocked`, not `ruled_out` — walk the bypass families above and
+`vulnerabilities/waf_evasion.md`.
+
 ## Summary
 
 Secure uploads are a pipeline property. Enforce strict type, size, and header controls; transform or strip active content; never execute or inline-render untrusted uploads; and keep storage private with controlled, signed access.

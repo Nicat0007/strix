@@ -213,6 +213,15 @@ Test search order with candidate marker files or filesystem traces. Trigger the 
 5. Use minimal PoCs and hard evidence (hashes, paths). Avoid noisy DoS against filesystems
 6. When direct execution is blocked, enumerate internal search paths before assuming the write is low impact
 
+## Block Handling
+
+A `403`/WAF (or a filtered `../`) is `blocked`, not `ruled_out`. Escalate the
+encoding: `%2e%2e%2f`, double-encode `%252e`, `....//` (strip-once bypass),
+UTF-8 overlong, a nested/null `...%00.png`, an absolute path, and bypassing a
+forced prefix/suffix. When the filesystem read is blocked but the parameter still
+reaches the parser, pivot to the `php://filter`/`data://` wrappers above. See
+`vulnerabilities/waf_evasion.md` (`load_skill(["waf_evasion"])`).
+
 ## Summary
 
 Eliminate user-controlled paths where possible. Otherwise, resolve to canonical paths and enforce allowlists, forbid remote schemes, and lock down interpreters and extractors. Normalize consistently at the boundary closest to IO.

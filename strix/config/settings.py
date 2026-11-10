@@ -33,6 +33,12 @@ class LlmSettings(BaseSettings):
     model_config = _BASE_CONFIG
 
     model: str | None = Field(default=None, alias="STRIX_LLM")
+    # Optional stronger model for the ROOT orchestrator only (hypothesis
+    # forming, chaining, final-report reasoning). When set AND different from
+    # ``model``, the run goes "tiered": the root agent uses this model and every
+    # child hunter uses the cheaper ``model``. Unset (or equal) = single-model
+    # behaviour, byte-identical to before. See ``core/runner.py`` tiered wiring.
+    root_model: str | None = Field(default=None, alias="STRIX_ROOT_LLM")
     api_key: str | None = Field(
         default=None,
         validation_alias=AliasChoices("LLM_API_KEY", "OPENAI_API_KEY"),
@@ -104,7 +110,16 @@ class ContextSettings(BaseSettings):
         default=200_000, gt=0, alias="STRIX_CONTEXT_FALLBACK_TOKENS"
     )
     summary_max_tokens: int = Field(default=4_096, gt=0, alias="STRIX_CONTEXT_SUMMARY_TOKENS")
-    tool_output_max_tokens: int = Field(default=8_000, gt=0, alias="STRIX_TOOL_OUTPUT_MAX_TOKENS")
+    # Inline per-tool-output budget the model sees each turn. Scanner dumps
+    # (nuclei/katana/ffuf) are the largest *uncached* blocks a run repeats across
+    # every agent, so a tighter cap is a direct cost cut; oversized output is not
+    # lost — it spills to /workspace and the agent reads the file on demand.
+    # 6k is the balance point: tight enough that repeated scanner dumps don't
+    # bloat every agent's (uncached) history, loose enough that a JS bundle / ffuf
+    # page / API response stays readable inline during recon, where seeing less
+    # inline costs real recall. (Was briefly 4k for cost; recon quality wants more.)
+    # Raise via STRIX_TOOL_OUTPUT_MAX_TOKENS if a target genuinely needs more.
+    tool_output_max_tokens: int = Field(default=6_000, gt=0, alias="STRIX_TOOL_OUTPUT_MAX_TOKENS")
     tool_output_max_lines: int = Field(default=2_000, gt=0, alias="STRIX_TOOL_OUTPUT_MAX_LINES")
     # Floor above the truncation-notice size so a preview always fits.
     tool_output_max_bytes: int = Field(

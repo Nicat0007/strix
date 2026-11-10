@@ -814,21 +814,29 @@ async def create_vulnerability_report(
             fix (summary + rationale). Prose/markdown only — the code
             change itself belongs in ``code_locations``. Omit for
             black-box findings.
-        discloses: Optional. Plain identifier/field names this finding's
-            *response* exposes to the attacker (e.g.
-            ``["booking_id", "session_token"]``) — not a description,
-            just the bare names. Used only for mechanical
-            cross-referencing against other findings' ``requires`` via
-            ``list_chain_candidates`` (see `coordination/root_agent.md`'s
-            "Chain Findings Before Finishing"), never for judgment or
-            severity. Omit when this finding doesn't disclose anything
-            reusable elsewhere — most findings won't set this.
-        requires: Optional. Plain identifier/parameter names this
-            finding's exploitation needs as *input* (e.g.
-            ``["booking_id"]``) — the mirror of ``discloses``. A finding
-            whose ``requires`` overlaps another finding's ``discloses``
-            is a candidate chain link, surfaced (never auto-confirmed)
-            by ``list_chain_candidates``.
+        discloses: Plain identifier/field names this finding's *response*
+            exposes to the attacker (e.g. ``["booking_id",
+            "session_token"]``) — not a description, just the bare names.
+            Used only for mechanical cross-referencing against other
+            findings' ``requires`` via ``list_chain_candidates`` (see
+            `coordination/root_agent.md`'s "Chain Findings Before
+            Finishing"), never for judgment or severity. **Set it whenever
+            the response hands back any identifier another endpoint could
+            consume** — object IDs, tokens, emails, user/tenant refs, a
+            verbose error leaking an internal key. Information-disclosure,
+            IDOR, and verbose-error findings almost always qualify; this
+            field is the data the automatic chain pass runs on, so leaving
+            it blank on a finding that *does* disclose a reusable
+            identifier silently disables chaining for it.
+        requires: Plain identifier/parameter names this finding's
+            exploitation needs as *input* (e.g. ``["booking_id"]``) — the
+            mirror of ``discloses``. **Set it whenever exploitation depends
+            on knowing an identifier the attacker can't normally guess** —
+            an IDOR/BFLA finding that needs a victim's object/tenant/user
+            id, a flow that needs a leaked token. A finding whose
+            ``requires`` overlaps another finding's ``discloses`` is a
+            candidate chain link, surfaced (never auto-confirmed) by
+            ``list_chain_candidates``.
 
     Example (abbreviated — mirror this structure)::
 

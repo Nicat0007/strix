@@ -417,6 +417,27 @@ def build_coverage_document(
         *_silent_agent_gaps(entries, agents),
     ]
 
+    # Deterministic family-coverage matrix + component-research gaps, read from
+    # the live run-scoped stores. Applicability (applicable/not_applicable/
+    # unknown) is reported SEPARATELY from execution; the report stays explicitly
+    # incomplete while any applicable-but-untested / unknown / blocked / stale /
+    # missing-capability cell or unresolved component remains.
+    from strix.tools.component_research.tools import query_impl as _component_query
+    from strix.tools.coverage_matrix.tools import coverage_gaps_impl as _matrix_gaps
+
+    matrix = _matrix_gaps()
+    components = _component_query().get("components", [])
+    unresolved_components = [
+        c for c in components
+        if c.get("applicability_verdict") in ("research_pending", "uncertain", "candidate")
+        or c.get("version_stale_after_resume")
+    ]
+    # An empty/uninitialized matrix (planner never ran) must NOT read as complete —
+    # "no cells" means coverage was never assessed, not that everything passed.
+    family_coverage_planned = matrix["total_cells"] > 0
+    family_coverage_complete = (family_coverage_planned and matrix["gap_count"] == 0
+                                and not unresolved_components)
+
     return {
         "schema_version": COVERAGE_SCHEMA_VERSION,
         "generated_at": datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC"),
@@ -434,6 +455,15 @@ def build_coverage_document(
             "outcomes": _outcome_counts(entries),
             "findings_filed": len(vulnerability_reports),
             "gaps": len(gaps),
+            "family_matrix_cells": matrix["total_cells"],
+            "family_matrix_tested": matrix["tested_cells"],
+            "family_matrix_gaps": matrix["gap_count"],
+            "component_observations": len(components),
+            "unresolved_components": len(unresolved_components),
+            # Completion never implies exhaustive testing: this is False whenever
+            # any family-coverage cell or component research remains unresolved,
+            # even if the scan finished because its budget was exhausted.
+            "family_coverage_complete": family_coverage_complete,
         },
         "machine_observed": {
             "agents": agents,
@@ -444,6 +474,20 @@ def build_coverage_document(
         "completeness": _completeness(run_record, agents, exit_reason),
         "entries": ledger,
         "gaps": gaps,
+        "family_coverage_matrix": {
+            "planned": family_coverage_planned,
+            "total_cells": matrix["total_cells"],
+            "tested_cells": matrix["tested_cells"],
+            "gap_count": matrix["gap_count"],
+            "complete": family_coverage_complete,
+            "note": ("coverage matrix was never initialized (plan_coverage not run) — family "
+                     "coverage is UNASSESSED, not complete" if not family_coverage_planned else ""),
+            "gaps": matrix["gaps"][:200],
+        },
+        "component_research": {
+            "total": len(components),
+            "unresolved": unresolved_components[:100],
+        },
     }
 
 

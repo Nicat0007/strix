@@ -118,6 +118,7 @@ class ReportUsageHooks(RunHooks[dict[str, Any]]):
         self,
         *,
         model: str,
+        root_model: str | None = None,
         max_budget_usd: float | None = None,
         max_turns: int | None = None,
         interactive: bool = False,
@@ -129,6 +130,9 @@ class ReportUsageHooks(RunHooks[dict[str, Any]]):
         if max_turns is not None and max_turns <= 0:
             raise ValueError("max_turns must be a positive integer")
         self._model = model
+        # Tiered runs price the root agent's tokens at the root model's rate;
+        # None (default) = single-model run, every agent priced at ``model``.
+        self._root_model = root_model
         self._max_budget_usd = max_budget_usd
         self._budget_increment = max_budget_usd
         self._max_turns = max_turns
@@ -240,11 +244,16 @@ class ReportUsageHooks(RunHooks[dict[str, Any]]):
         if not isinstance(agent_id, str) or not agent_id:
             agent_id = agent_name or "unknown"
 
+        # Price the root agent's tokens at the root model in a tiered run; every
+        # other agent (and every agent in a single-model run) at ``self._model``.
+        is_root = ctx.get("parent_id") is None
+        usage_model = self._root_model if (self._root_model and is_root) else self._model
+
         try:
             report_state.record_sdk_usage(
                 agent_id=agent_id,
                 agent_name=agent_name,
-                model=self._model,
+                model=usage_model,
                 usage=response.usage,
             )
         except Exception:
@@ -261,7 +270,6 @@ class ReportUsageHooks(RunHooks[dict[str, Any]]):
                 raise BudgetExceededError(
                     f"Token budget of ${self._max_budget_usd:.2f} exceeded (spent ${cost:.4f})"
                 )
-            is_root = ctx.get("parent_id") is None
             if not self._interactive and not is_root:
                 reserve_limit = self._max_budget_usd * _SUBAGENT_BUDGET_RESERVE
                 if cost >= reserve_limit:

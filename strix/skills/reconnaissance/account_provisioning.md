@@ -9,6 +9,8 @@ IDOR, BFLA, business logic, and multi-tenant isolation are where the real value 
 
 Work through the fallback tiers in order: automated self-registration and OTP-bypass first, then asking the operator directly for a verification code (Human-in-the-Loop Verification), then an operator-supplied credential file, and only then `needs_follow_up`. Each tier is cheaper and more autonomous than the next; don't skip ahead to a later one just because an earlier one takes a few more requests.
 
+**One exception, and it's about reading the wall, not skipping work:** when the auth model (mapped below) already shows a hard human gate you cannot automate around — real-phone SMS OTP, manual admin approval, an SSO/IdP you can't complete — and the run is interactive, involve the operator *up front* (Human-in-the-Loop) rather than spending a full wave on bypass attempts that the auth model already tells you will fail. Obtaining a session is the **default expectation** of a serious black-box run, not a nice-to-have: most of the real attack surface (IDOR, BFLA, business logic, multi-tenant) is behind the login, so an unauthenticated-only run is a partial run and must say so in the report.
+
 ## Map the Auth Model First
 
 Pull this from recon output (`/workspace/recon/`, JS-bundle extraction, `asset_discovery.md`'s auth-classified hosts) before attempting anything:
@@ -37,6 +39,38 @@ These double as findings in their own right — a working bypass is both your wa
 
 Record every attempt via `record_coverage`; a working bypass gets a full PoC and a report per `analysis/counterevidence.md` — don't just use it silently and move on to hunting.
 
+## A Confirmed Bypass Is a Provisioned Session — Pivot, Don't Just Report
+
+Any access you obtain — an OTP/verification bypass, a leaked/default/bundle
+credential, a reused session — is **provisioning, not just a finding.** File the
+report, then **immediately pivot the obtained session into authenticated testing**,
+because the strongest black-box tools are locked behind exactly this and are
+useless without it:
+
+1. **Record it as a provisioned actor** in `auth_accounts.jsonl` (principal, role,
+   the obtained token/cookie/identity, `obtained_via: "<bypass name>"`) — the same
+   as any other account, so the rest of the scan reads it from there.
+2. **Crawl as that actor** with `run_crawl_job` (see "Feeding the Attack-Surface
+   Inventory per Actor") so the authenticated surface enters the inventory.
+3. **Feed it to the deterministic authorization executor.** `run_authorization_test`
+   (BOLA/BFLA — OWASP API #1, the highest black-box payout class) requires
+   provisioned sessions and **never fires without them**, so a bypass you only
+   reported leaves that whole class untested. Hand the session to the IDOR/BFLA
+   hunters.
+
+**If the bypass is repeatable, provision TWO sessions, not one** (e.g. the same
+empty-OTP/verification bypass against two different phone numbers/identifiers). Two
+distinct authenticated actors is what unlocks the cross-actor comparison —
+`run_authorization_test`'s two-actor replay and `query_cross_actor_access` both
+require it, and a single session cannot prove cross-user access.
+
+**A weak/partial identity still counts.** If the bypass yields only a `userId` or
+an identity assertion (no full token), that is still a provisioned principal: save
+what you have and test every WRITE endpoint whose body carries an identifier with
+it (a `userId`/`ownerId` the server may trust) — "no direct data-read" is the
+*start* of a write-then-read chain (see `coordination/root_agent.md`'s chaining),
+not the end.
+
 ## Human-in-the-Loop Verification
 
 When automated bypass fails and the code genuinely goes out-of-band (a real email/SMS you cannot read), don't drop straight to `needs_follow_up` — ask the operator. This is the preferred fallback over an operator-supplied token: it lets you drive the whole registration/login flow yourself, with the operator only supplying the one thing you can't get automatically.
@@ -58,6 +92,8 @@ Submit the returned code to the verification endpoint and continue to a token ex
 - The identifier must be one the operator supplies and controls — same discipline as below, just satisfied by asking instead of guessing
 
 If two accounts are needed, repeat with a second operator-supplied identifier — one `respond_to_user` round-trip per account is normal, not excessive use.
+
+**When the operator gives you a whole SESSION (not just a code)** — the common case for SSO-only targets where you can't complete the login yourself — don't hand-parse it. Ask them to log in once in their browser and paste back whatever is easiest (their `document.cookie` string, the `Cookie:` request header, or a DevTools "Copy as cURL"), then pass that paste straight to **`ingest_session(principal=..., session_blob=<their paste>, role=...)`**. It deterministically parses the cookie/token and writes the correctly-shaped actor entry to `auth_accounts.jsonl` — the exact fields the authenticated tools read — so a single wrong character in a hand-written JSONL never silently kills the authenticated run. Then verify it is live with `run_crawl_job`'s marker check (below), and ingest a second actor for cross-user tests.
 
 ## Provisioning Two Accounts
 

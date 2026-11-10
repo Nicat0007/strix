@@ -181,6 +181,25 @@ Server-Side Request Forgery enables the server to reach networks and services th
 7. When responses are masked, diff length/ETag/status and TLS error classes to infer reachability
 8. Chain quickly to durable impact (short-lived tokens, harmless internal reads) and stop there
 
+## Stored / Second-Order SSRF and Block Handling
+
+The highest-miss SSRF shape is not a parameter the server fetches *now* — it's a
+URL you **store** that the server fetches **later**, from a different context:
+
+- A `callbackURL` / `webhookUrl` / `avatarUrl` / `importSource` / `logo` field
+  saved on create, then fetched on save-confirm, by a cron, on an admin preview,
+  or by a background job. The **fetch**, not the write, is the vuln — a clean
+  write response proves nothing (cross-link `second_order_injection.md`).
+- **Lead with an OOB oracle:** store a URL pointing at your collaborator
+  (`interactsh`), then trigger or wait for the consuming action. A DNS/HTTP
+  callback confirms the server-side fetch even with nothing reflected to you.
+- Once a fetch is confirmed, escalate as usual (cloud metadata, internal
+  services, gopher/dict/file) — but the *store → later fetch* is what
+  single-request SSRF testing misses.
+
+A `403`/WAF on the write is `blocked`, not `ruled_out` — see
+`vulnerabilities/waf_evasion.md`.
+
 ## Summary
 
 Any feature that fetches remote content on behalf of a user is a potential tunnel to internal networks and control planes. Bind scheme/host/port/headers explicitly or expect an attacker to route through them.

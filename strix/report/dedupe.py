@@ -133,29 +133,35 @@ Rules:
 - Output ONLY the JSON object — no surrounding prose, no code fences."""
 
 
+# Fields that identify WHAT and WHERE the bug is drive the duplication decision;
+# the verbose PoC/analysis prose rarely flips a verdict that title + endpoint +
+# a short description did not already make. Cap the verbose fields hard (not the
+# old uniform 8000) so the comparison input — which is uncached and grows O(n^2)
+# across a run — stays small. ``None`` keeps a short identifier field in full.
+_COMPARISON_FIELD_CAPS: dict[str, int | None] = {
+    "id": None,
+    "title": None,
+    "endpoint": None,
+    "method": None,
+    "target": None,
+    "cve": None,
+    "dependency_metadata": None,
+    "description": 1500,
+    "impact": 500,
+    "technical_analysis": 800,
+    "poc_description": 800,
+}
+
+
 def _prepare_report_for_comparison(report: dict[str, Any]) -> dict[str, Any]:
-    relevant_fields = [
-        "id",
-        "title",
-        "description",
-        "impact",
-        "target",
-        "technical_analysis",
-        "poc_description",
-        "endpoint",
-        "method",
-        "cve",
-        "dependency_metadata",
-    ]
-
-    cleaned = {}
-    for field in relevant_fields:
-        if report.get(field):
-            value = report[field]
-            if isinstance(value, str) and len(value) > 8000:
-                value = value[:8000] + "...[truncated]"
-            cleaned[field] = value
-
+    cleaned: dict[str, Any] = {}
+    for field, cap in _COMPARISON_FIELD_CAPS.items():
+        value = report.get(field)
+        if not value:
+            continue
+        if cap is not None and isinstance(value, str) and len(value) > cap:
+            value = value[:cap] + "...[truncated]"
+        cleaned[field] = value
     return cleaned
 
 
@@ -325,6 +331,46 @@ def _extract_text(response: ModelResponse) -> str:
     return "".join(parts)
 
 
+_ID_SEGMENT_RE = re.compile(r"\A(?:\d+|[0-9a-f]{8,}|[0-9a-fA-F-]{16,})\Z")
+_TITLE_STOPWORDS = frozenset(
+    {
+        "the", "a", "an", "of", "in", "on", "to", "for", "and", "or", "via", "with",
+        "is", "are", "by", "at", "from", "into", "that", "this", "unauthenticated",
+        "missing", "improper", "insecure", "allows", "enables", "api", "endpoint",
+    }
+)
+
+
+def _normalized_endpoint(report: dict[str, Any]) -> str:
+    """Scheme/host-stripped path with id-shaped segments collapsed to ``{id}``."""
+    raw = str(report.get("endpoint") or report.get("target") or "").strip().lower()
+    if not raw:
+        return ""
+    path = raw.split("://", 1)[1] if "://" in raw else raw
+    if "://" in raw:
+        path = path[path.find("/") :] if "/" in path else ""
+    path = path.split("?", 1)[0].split("#", 1)[0]
+    segs = [s for s in path.split("/") if s]
+    norm = "/".join("{id}" if _ID_SEGMENT_RE.match(s) else s for s in segs)
+    return f"/{norm}" if norm else ""
+
+
+def _title_tokens(report: dict[str, Any]) -> set[str]:
+    title = str(report.get("title") or "").lower()
+    return {t for t in re.split(r"[^a-z0-9]+", title) if len(t) >= 4 and t not in _TITLE_STOPWORDS}
+
+
+def _plausibly_related(candidate: dict[str, Any], report: dict[str, Any]) -> bool:
+    """Could these two be the same finding? Err toward ``True`` — this only prunes
+    the LLM comparison for reports that clearly cannot be duplicates (a different
+    endpoint AND no shared title/class word), which the judge would call
+    'not duplicate' anyway. When either side has no usable endpoint, keep it."""
+    cep, rep = _normalized_endpoint(candidate), _normalized_endpoint(report)
+    if not cep or not rep or cep == rep:
+        return True
+    return bool(_title_tokens(candidate) & _title_tokens(report))
+
+
 async def check_duplicate(
     candidate: dict[str, Any], existing_reports: list[dict[str, Any]]
 ) -> dict[str, Any]:
@@ -340,6 +386,19 @@ async def check_duplicate(
     if dependency_duplicate is not None:
         return dependency_duplicate
 
+    # Structural pre-filter: only LLM-compare against reports that could plausibly
+    # be the same finding. Skips the (uncached, O(n^2)) judge call entirely when
+    # nothing is related, and shrinks its input when only some are — quality is
+    # unchanged because an unrelated report is judged 'not duplicate' regardless.
+    related = [r for r in existing_reports if _plausibly_related(candidate, r)]
+    if not related:
+        return {
+            "is_duplicate": False,
+            "duplicate_id": "",
+            "confidence": 0.9,
+            "reason": "No existing report shares the candidate's endpoint or vulnerability class",
+        }
+
     try:
         settings = load_settings()
         dedupe = settings.dedupe
@@ -353,7 +412,7 @@ async def check_duplicate(
             }
 
         candidate_cleaned = _prepare_report_for_comparison(candidate)
-        existing_cleaned = [_prepare_report_for_comparison(r) for r in existing_reports]
+        existing_cleaned = [_prepare_report_for_comparison(r) for r in related]
         comparison_data = {"candidate": candidate_cleaned, "existing_reports": existing_cleaned}
 
         user_msg = (

@@ -176,6 +176,18 @@ Concurrency bugs enable duplicate state changes, quota bypass, financial abuse, 
 9. Validate on production-like latency; some races only appear under real load
 10. Document minimal, repeatable request sets that demonstrate durable impact
 
+## The Sequence Dimension — What to Race
+
+The HTTP/2 multiplexing / last-byte-sync machinery above is *how* to fire a tight
+race (the single-packet attack); deciding *what* to race is a business-logic
+question. The consumed-step replay in `business_logic.md`'s "Stateful Workflow
+Mutation" — re-submitting a one-time step (apply-coupon, redeem, confirm, withdraw)
+concurrently — is the sequence-level version of this. Coupon/credit reuse,
+balance/limit overrun, double-spend, and one-time-token reuse are the
+highest-payout targets. Pair this file's firing technique with that file's
+invariant-selection to turn "requests landed concurrently" into a proven
+double-effect.
+
 ## Summary
 
 Concurrency safety is a property of every path that mutates state. If any path lacks atomicity, proper isolation, or idempotency, parallel requests will eventually break invariants.

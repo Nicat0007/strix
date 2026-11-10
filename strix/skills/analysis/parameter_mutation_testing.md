@@ -56,6 +56,36 @@ members needs one Control capture and up to fifteen T/X sends, not fifteen
 independent C/T/X triples — re-fetching an unchanged Control repeatedly
 burns request budget for zero new information.
 
+## Anomaly Tier — The Bounded Surprise Pass
+
+The Control/Boundary/Adversarial set is hypothesis-driven: you test what a vuln
+class *predicts*. That is precise but misses the bug nobody predicted — the one
+that only shows when an input is shaped in a way no hypothesis anticipated. After
+the class-driven mutations on a parameter, spend a **small, fixed budget** on an
+anomaly pass that just tries to make the endpoint behave abnormally, then follow
+any abnormal response as a new lead:
+
+- **Type confusion** — an array/object where a string/int is expected and
+  vice-versa (`id=[1]`, `id={"$gt":0}`, `qty="1"` vs `qty=1`), `null`, `true`,
+  nested JSON. Framework coercion bugs, mass-assignment, and NoSQL operators all
+  surface here.
+- **Magnitude / boundary** — very large numbers (`9e999`, overflow), very long
+  strings, deep nesting, many array elements, negative/zero, `0x`/`1e3`/unicode
+  digits.
+- **Encoding / charset** — double-encoding, unicode normalization pairs, null
+  byte, CRLF, RTL/zero-width, mixed charset — the input the parser and the
+  validator disagree on.
+- **Structural** — duplicate keys, extra/unknown fields, missing required fields,
+  the wrong content-type for the same body, trailing data.
+
+Keep it **bounded** (a handful of probes per parameter, not a fuzzing campaign)
+and **response-driven**: a 500, a stack trace, a timing spike, a newly reflected
+value, a different error shape, or a status flip is the signal — feed it straight
+into the matching class skill (a SQL error → `sql_injection.md`, a type-coercion
+diff → `mass_assignment.md`/`nosql_injection.md`, a parser 500 →
+`xxe.md`/`insecure_deserialization.md`). An ordinary 4xx with nothing anomalous
+closes the probe. This complements hypothesis-first; it does not replace it.
+
 ## Layer B — Shared Diff Record
 
 ### Caller Contract
@@ -511,6 +541,17 @@ request/diff loop from scratch and burning tokens re-establishing what
   pair fills Actor Replay's tier-2 representative slot via
   `trust_boundaries.md`'s Test Pairs; absent, the arbitrary-pair fallback
   documented above is unchanged.
+- `vulnerabilities/second_order_injection.md` — a mutation that looks clean
+  on the immediate response may still fire at a *stored* sink elsewhere; when
+  the mutated field persists, follow it there rather than closing on the
+  write response alone.
+
+**Record coverage per input, not per endpoint.** For an injection-class
+sweep, a cleared result covers only the one parameter you mutated — log it
+with `record_endpoint_test(..., category=..., param="<name>")` so the
+inventory shows which of an endpoint's inputs still need which test. An
+endpoint marked "tested" after one of its ten parameters was fuzzed is the
+exact false-completeness this per-param granularity exists to prevent.
 
 ## Summary
 

@@ -804,6 +804,7 @@ def _record_test_impl(
     note: str,
     agent_id: str | None,
     agent_name: str | None,
+    param: str = "",
 ) -> dict[str, Any]:
     key_id = (endpoint_id or "").strip()
     normalized_status = status.strip().lower()
@@ -819,6 +820,11 @@ def _record_test_impl(
     # A test is scoped to a concrete object so completing one never closes its
     # siblings. An empty resource_id is an explicit template-wide ('*') scope.
     resource_token = _resource_scope(resource_id)
+    # Optional per-input granularity: an injection-class test covers one parameter,
+    # not the whole endpoint, so a cleared `sqli` on param `q` must NOT read as
+    # covering `sort`. When given, the param extends the row key; when empty, the
+    # key is unchanged (endpoint/object-level), so existing callers are unaffected.
+    param_norm = _redact_secrets((param or "").strip())[:64]
 
     with _lock:
         entry = _store.get(key_id)
@@ -829,6 +835,8 @@ def _record_test_impl(
             }
         test_rows = entry.setdefault("test_status", {})
         row_key = f"{actor}|{category_norm}|{resource_token}"
+        if param_norm:
+            row_key += f"|{param_norm}"
         row = test_rows.get(row_key, {})
         row.update(
             {
@@ -839,6 +847,8 @@ def _record_test_impl(
                 "updated_at": _now(),
             }
         )
+        if param_norm:
+            row["param"] = param_norm
         if note.strip():
             row["note"] = _redact_secrets(note.strip())[:_NOTE_MAX]
         if agent_name:
@@ -853,6 +863,7 @@ def _record_test_impl(
         "actor_ref": actor,
         "category": category_norm,
         "resource": resource_token,
+        "param": param_norm,
         "status": normalized_status,
     }
 
@@ -1349,8 +1360,9 @@ async def record_endpoint_test(
     actor_ref: str = "anonymous",
     resource_id: str = "",
     note: str = "",
+    param: str = "",
 ) -> str:
-    """Track test progress on an endpoint, keyed to endpoint + actor + category + object.
+    """Track test progress on an endpoint, keyed to endpoint + actor + category + object (+ param).
 
     This is the attack-surface analogue of the coverage ledger's open/closed
     bookkeeping, at per-object granularity: it lets the inventory say *which
@@ -1375,6 +1387,12 @@ async def record_endpoint_test(
         resource_id: The concrete object tested (a path, URL, or bare id). Empty
             means a template-wide conclusion.
         note: Optional short note (e.g. why it is blocked).
+        param: Optional single input tested, for injection classes where coverage
+            is per-parameter, not per-endpoint (`q`, `sort`, `X-Forwarded-For`,
+            `filter[status]`). Set it so a cleared `sql_injection` on `q` does NOT
+            read as covering the endpoint's other params — the inventory can then
+            show which inputs still need which test. Omit for endpoint/object-level
+            conclusions (IDOR/BFLA/business-logic), where the object is the scope.
     """
     agent_id, agent_name = _caller_identity(ctx)
     result = await asyncio.to_thread(
@@ -1387,5 +1405,110 @@ async def record_endpoint_test(
         note=note,
         agent_id=agent_id,
         agent_name=agent_name,
+        param=param,
     )
+    return json.dumps(result, ensure_ascii=False, default=str)
+
+
+def _is_success_status(code: Any) -> bool:
+    return isinstance(code, int) and 200 <= code < 300
+
+
+def _cross_actor_impl(*, endpoint_id: str | None = None, limit: int = 100) -> dict[str, Any]:
+    """Deterministic cross-actor access diff over per-actor observations.
+
+    For each (endpoint, concrete resource), collect which actors observed it and
+    at what status. A resource reached with a 2xx by 2+ distinct actors is a
+    cross-actor-access CANDIDATE (a principal reached an object another principal
+    also holds — the exact signal idor/bfla verify). A resource where one actor
+    succeeds and another is blocked (403/401) is an ISOLATION baseline: the
+    control demonstrably works there, a ready negative control. Never a verdict.
+    """
+    want_ep = (endpoint_id or "").strip()
+    candidates: list[dict[str, Any]] = []
+    isolation: list[dict[str, Any]] = []
+    with _lock:
+        if want_ep:
+            if want_ep not in _store:
+                return {"success": False, "error": f"No endpoint {endpoint_id!r}."}
+            entries: list[dict[str, Any]] = [_store[want_ep]]
+        else:
+            entries = list(_store.values())
+        for entry in entries:
+            eid = entry.get("endpoint_id")
+            path = entry.get("path") or ""
+            method = entry.get("method") or ""
+            by_resource: dict[str, dict[str, Any]] = {}
+            for o in entry.get("observations", []):
+                res = o.get("resource")
+                actor = o.get("actor_ref")
+                if not res or res == "*" or not actor:
+                    continue
+                code = o.get("status_code")
+                cur = by_resource.setdefault(res, {})
+                # keep the most-successful status seen for this actor on this object
+                if actor not in cur or (
+                    _is_success_status(code) and not _is_success_status(cur[actor])
+                ):
+                    cur[actor] = code
+            for res, actor_status in by_resource.items():
+                succeeded = sorted({a for a, c in actor_status.items() if _is_success_status(c)})
+                if len(succeeded) >= 2:
+                    candidates.append({
+                        "endpoint_id": eid, "method": method, "path": path, "resource": res,
+                        "actors_with_success": succeeded,
+                        "signal": "same object reached (2xx) by multiple actors — "
+                                  "verify cross-user/cross-tenant access",
+                    })
+                elif succeeded and len(actor_status) >= 2:
+                    blocked = sorted(
+                        a for a, c in actor_status.items() if not _is_success_status(c)
+                    )
+                    if blocked:
+                        isolation.append({
+                            "endpoint_id": eid, "method": method, "path": path, "resource": res,
+                            "success_actors": succeeded, "blocked_actors": blocked,
+                        })
+    candidates.sort(key=lambda c: (str(c["path"]), str(c["resource"])))
+    isolation.sort(key=lambda c: (str(c["path"]), str(c["resource"])))
+    return {
+        "success": True,
+        "candidate_count": len(candidates),
+        "candidates": candidates[:limit],
+        "candidates_truncated": len(candidates) > limit,
+        "isolation_baseline": isolation[:limit],
+        "note": "Candidates are leads for idor.md/bfla.md to verify — a shared 2xx is "
+                "not proof (both actors may legitimately hold access, or it may be "
+                "public). isolation_baseline lists resources where the control works, "
+                "ready negative controls. Confirm real cross-user content/state per "
+                "analysis/counterevidence.md before filing.",
+    }
+
+
+@function_tool(timeout=30)
+async def query_cross_actor_access(
+    ctx: RunContextWrapper,  # noqa: ARG001
+    endpoint_id: str | None = None,
+    limit: int = 100,
+) -> str:
+    """Surface cross-actor access candidates (BOLA/BFLA leads) from the inventory.
+
+    A deterministic, zero-LLM diff over the per-actor observations already in the
+    attack-surface inventory: it finds concrete objects reached with a 2xx by more
+    than one actor (cross-user/cross-tenant access to verify) and objects where one
+    actor succeeds while another is blocked (a working isolation control = a ready
+    negative control). This turns the richest black-box data — what each principal
+    actually observed on each object — into an automatic worklist instead of relying
+    on an agent to notice the pattern by eye.
+
+    Run it after at least two actors have been crawled/observed (see
+    `reconnaissance/account_provisioning.md`'s per-actor `run_crawl_job`). Every row
+    is a LEAD, never a finding: `idor.md`/`broken_function_level_authorization.md`
+    still prove real cross-user content/state per `analysis/counterevidence.md`.
+
+    Args:
+        endpoint_id: Restrict to one endpoint; omit to scan the whole inventory.
+        limit: Max candidates / isolation rows returned (default 100).
+    """
+    result = await asyncio.to_thread(_cross_actor_impl, endpoint_id=endpoint_id, limit=limit)
     return json.dumps(result, ensure_ascii=False, default=str)
