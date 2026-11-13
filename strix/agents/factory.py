@@ -85,6 +85,7 @@ from strix.tools.notes.tools import (
 )
 from strix.tools.nullish import is_nullish
 from strix.tools.oob_executor.tools import run_oob_test
+from strix.tools.open_redirect_executor.tools import run_open_redirect_test
 from strix.tools.output_store import bound_and_store, bound_text
 from strix.tools.proxy.tools import (
     list_requests,
@@ -661,6 +662,7 @@ _BASE_TOOLS: tuple[Tool, ...] = (
     run_authorization_test,
     run_xss_test,
     run_oob_test,
+    run_open_redirect_test,
     ingest_session,
     plan_coverage,
     assess_coverage,

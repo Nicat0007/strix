@@ -123,6 +123,19 @@ Open redirects enable phishing, OAuth/OIDC code and token theft, and allowlist b
 
 ## Testing Methodology
 
+> **Preferred path — `run_open_redirect_test`.** For an `open_redirect`
+> hypothesis with a captured request, call
+> `run_open_redirect_test(hypothesis_id=..., request_ref=..., param_name="next")`.
+> It injects a uniquely-marked off-origin target at the named location, replays
+> once, and classifies the response's redirect by whether it sends the client to
+> the marker — via the `Location` header (browser-lenient parse, so `//h`,
+> `https:/h`, `\h`, `https:h` bypass shapes are caught) or a meta-refresh / JS
+> `location` in the body. Pass a `payload_template` with `{OOB}`/`{OOB_URL}` for
+> bypass variants. A redirect to the marker is `needs_validation` (demonstrate
+> real impact — OAuth token theft / SSRF / phishing — to confirm); a body-based
+> redirect is flagged lower-confidence; no redirect is `testing`, never
+> `ruled_out`. The attempt is recorded on the worklist automatically.
+
 1. **Inventory surfaces** - Login/logout, password reset, SSO/OAuth flows, payment gateways, email links
 2. **Build test matrix** - Scheme × host × path variants and encoding/unicode forms
 3. **Compare behaviors** - Server-side validation vs browser navigation results
