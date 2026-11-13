@@ -221,6 +221,17 @@ Handlebars itself is harder (default helpers are restricted), but custom helpers
 
 ## Testing Methodology
 
+> **Preferred path — `run_ssti_test`.** For an `ssti` hypothesis with a captured
+> request, call `run_ssti_test(hypothesis_id=..., request_ref=..., param_name=...)`.
+> It injects per-engine arithmetic polyglots (Jinja2/Twig, Freemarker/EL/SpEL,
+> ERB/Ruby, Smarty, Razor), each with a DISTINCT large product, replays once, and
+> reports which engine evaluated — distinguishing real evaluation (product
+> present, literal absent → `needs_validation`) from mere reflection (literal
+> echoes back → an XSS lead, `testing`, re-route to `xss.md`) deterministically.
+> An arithmetic hit is `needs_validation`, never confirmed — escalate safely to
+> the engine's RCE gadget (below) to prove impact. The attempt is recorded on the
+> worklist automatically.
+
 1. **Find templated input** — anywhere a server clearly templated user input (preview panes, email previews, dynamic dashboards, custom fields)
 2. **Fingerprint the engine** — run the differential probe table; confirm with a second probe
 3. **Confirm evaluation, not reflection** — `{{7*7}}` rendering as `49` (not `{{7*7}}` literally) is the line between XSS and SSTI

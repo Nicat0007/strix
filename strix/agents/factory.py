@@ -106,6 +106,7 @@ from strix.tools.reporting.tool import (
 from strix.tools.respond.tool import respond_to_user
 from strix.tools.session_ingest.tools import ingest_session
 from strix.tools.sqli_executor.tools import run_sqli_test
+from strix.tools.ssti_executor.tools import run_ssti_test
 from strix.tools.thinking.tool import think
 from strix.tools.threat_model.tools import (
     amend_threat_model,
@@ -663,6 +664,7 @@ _BASE_TOOLS: tuple[Tool, ...] = (
     run_xss_test,
     run_oob_test,
     run_open_redirect_test,
+    run_ssti_test,
     ingest_session,
     plan_coverage,
     assess_coverage,

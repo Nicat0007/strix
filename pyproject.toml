@@ -262,6 +262,8 @@ ignore = [
 "tests/test_oob_executor.py" = ["ARG001", "ARG002"]
 # Injected retrieve/send provider fakes ignore some args by design.
 "tests/test_open_redirect_executor.py" = ["ARG001", "ARG002"]
+# Injected retrieve/send provider fakes ignore some args by design.
+"tests/test_ssti_executor.py" = ["ARG001", "ARG002"]
 # Opt-in live sandbox integration: strix runtime imported lazily inside the gated
 # test (PLC0415); the embedded fixture server source has long lines (E501); docker
 # invoked by name (S607).
@@ -330,6 +332,10 @@ ignore = [
 # deliberate reuse of oob_executor scope/injection helpers and attack_surface/
 # hypotheses internals rather than duplicating them.
 "strix/tools/open_redirect_executor/tools.py" = ["PLR0911", "PLR0912", "PLR0915", "PLR0917", "SLF001"]
+# SSTI executor: run_ssti_test's params are its agent-facing schema (PLR0917);
+# orchestration is branchy (PLR0911/0912/0915); SLF001 is the deliberate reuse of
+# oob_executor / open_redirect_executor / hypotheses internals.
+"strix/tools/ssti_executor/tools.py" = ["PLR0911", "PLR0912", "PLR0915", "PLR0917", "SLF001"]
 # Coverage matrix: assessment tools expose many optional fields as their schema
 # (PLR0913/0917); the planner reads attack_surface/hypotheses host-side (SLF001).
 "strix/tools/coverage_matrix/tools.py" = ["PLR0911", "PLR0913", "PLR0917", "SLF001"]
