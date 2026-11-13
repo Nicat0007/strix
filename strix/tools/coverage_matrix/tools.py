@@ -64,6 +64,10 @@ FAMILIES: tuple[str, ...] = (
     "workflow_bypass", "race_condition", "rate_limit", "price_manipulation",
     "state_manipulation", "misconfiguration", "exposed_secrets", "cache_poisoning",
     "request_smuggling", "component_vuln",
+    # Real classes the matrix previously never PLANNED (so they were silently
+    # never assessed — the exact gap this addition closes).
+    "open_redirect", "header_injection", "csv_injection", "llm_prompt_injection",
+    "subdomain_takeover",
 )
 
 SURFACE_TYPES = ("origin", "route", "parameter", "actor_context", "component")
@@ -104,7 +108,7 @@ FAMILY_MAP: dict[str, dict[str, Any]] = {
                "prereqs": ["a reachable param", "a NoSQL-backed operation"]},
     "command_injection": {"skill": "rce", "capability": "agent_tools",
                           "prereqs": ["a param reaching an OS/command sink"]},
-    "ssti": {"skill": "ssti", "capability": "agent_tools",
+    "ssti": {"skill": "ssti", "capability": "executor",
              "prereqs": ["a param reflected through a template engine"]},
     "ldap_injection": {"skill": "underserved_families", "capability": "agent_tools",
                        "prereqs": ["a param reaching an LDAP/directory query"]},
@@ -141,9 +145,9 @@ FAMILY_MAP: dict[str, dict[str, Any]] = {
                   "prereqs": ["a WebSocket channel", "an authenticated actor"]},
     "workflow_bypass": {"skill": "business_logic", "capability": "agent_tools",
                         "prereqs": ["a multi-step workflow with an enforced order"]},
-    "race_condition": {"skill": "race_conditions", "capability": "agent_tools",
+    "race_condition": {"skill": "race_conditions", "capability": "executor",
                        "prereqs": ["a limited/idempotent-sensitive operation"]},
-    "rate_limit": {"skill": "weak_password_detection", "capability": "agent_tools",
+    "rate_limit": {"skill": "weak_password_detection", "capability": "executor",
                    "prereqs": ["an operation expected to be throttled"]},
     "price_manipulation": {"skill": "business_logic", "capability": "agent_tools",
                            "prereqs": ["a priced/quantity-bearing operation"]},
@@ -159,10 +163,27 @@ FAMILY_MAP: dict[str, dict[str, Any]] = {
                           "prereqs": ["a front-end/back-end proxy chain"]},
     "component_vuln": {"skill": "component_research", "capability": "agent_tools",
                        "prereqs": ["an observed component + usable version"]},
+    "open_redirect": {"skill": "open_redirect", "capability": "executor",
+                      "prereqs": ["a param used in a redirect / Location / client navigation"]},
+    "header_injection": {"skill": "header_injection", "capability": "agent_tools",
+                         "prereqs": [("a param reflected into a response header, a CRLF-capable "
+                                      "sink, or a Host/X-Forwarded-Host value used server-side")]},
+    "csv_injection": {"skill": "csv_injection", "capability": "agent_tools",
+                      "prereqs": ["a stored user-controlled value that reaches a CSV/XLSX export"]},
+    "llm_prompt_injection": {"skill": "llm_prompt_injection", "capability": "agent_tools",
+                             "prereqs": [("a reachable input that reaches an LLM/model (direct or "
+                                          "via retrieved/stored content)")]},
+    "subdomain_takeover": {"skill": "subdomain_takeover", "capability": "agent_tools",
+                           "prereqs": ["a dangling DNS record / alias to an unclaimed provider"]},
 }
 
-# Families with a dedicated executable executor (vs agent-driven skills).
-_EXECUTOR_FAMILIES = {"sqli", "xss", "idor_bola", "bfla"}
+# Families with a dedicated executable executor (vs agent-driven skills). The
+# blind/out-of-band executor (run_oob_test) additionally serves ssrf/xxe/
+# deserialization/command_injection as a confirmation channel, but those keep
+# agent_tools as their primary capability (the executor is one of several steps).
+_EXECUTOR_FAMILIES = {
+    "sqli", "xss", "idor_bola", "bfla", "ssti", "open_redirect", "rate_limit", "race_condition",
+}
 # Above this many distinct origins, seeding all 40 families on every origin is an
 # O(origins*40) grid the agent then works cell-by-cell — the matrix's biggest
 # uncapped cost. Past the cap, only the busiest origins get the full family sweep;
@@ -366,6 +387,11 @@ def _public(entry: dict[str, Any]) -> dict[str, Any]:
 _ID_HINTS = ("id", "uuid", "user", "account", "order", "invoice", "doc", "file", "object", "ref")
 _FILE_HINTS = ("file", "upload", "download", "path", "dir", "attachment", "document")
 _SSRF_HINTS = ("url", "uri", "host", "dest", "callback", "webhook", "redirect", "next", "target")
+_REDIRECT_HINTS = ("redirect", "redirect_uri", "redirecturl", "next", "return", "returnurl",
+                   "returnto", "continue", "goto", "dest", "destination", "url", "callback")
+_CSV_HINTS = ("export", "download", "report", "csv", "xlsx", "excel", "spreadsheet", "statement")
+_LLM_HINTS = ("ai", "llm", "chat", "prompt", "assistant", "completion", "message", "ask",
+              "gpt", "bot", "generate", "copilot")
 
 
 def _route_signals(ep: dict[str, Any]) -> dict[str, str]:
@@ -413,6 +439,15 @@ def _route_signals(ep: dict[str, Any]) -> dict[str, str]:
     if any(h in n for n in pnames for h in _SSRF_HINTS):
         out["ssrf"] = ("signal: url/callback-shaped parameter — NOT proof of a server-side fetch; "
                        "assess whether the server retrieves it")
+    if any(h == n or h in n for n in pnames for h in _REDIRECT_HINTS):
+        out["open_redirect"] = ("signal: redirect/return-shaped parameter — NOT proof it reaches a "
+                                "Location/navigation; assess whether the value controls a redirect")
+    if any(h in joined for h in _CSV_HINTS):
+        out["csv_injection"] = ("signal: export/report-shaped route — NOT proof a user-controlled "
+                                "field reaches the export; assess the inject->export round-trip")
+    if any(h in joined for h in _LLM_HINTS):
+        out["llm_prompt_injection"] = ("signal: AI/chat/prompt-shaped route or param — assess "
+                                       "whether an input reaches an LLM and test prompt injection")
     if "graphql" in path:
         out["graphql"] = "signal: graphql route — introspect and assess object/field authz"
     return out
@@ -687,7 +722,8 @@ def mark_families_blocked_impl(
     """Mark many families `blocked` on ONE shared prerequisite in a single call."""
     prereq = (blocking_prereq or "").strip()
     if not prereq:
-        return {"success": False, "error": "blocking_prereq is required (the one thing that blocks them all)"}
+        return {"success": False,
+                "error": "blocking_prereq is required (the one thing that blocks them all)"}
     fams = [f.strip().lower() for f in (families or []) if f.strip()]
     if not fams:
         # Empty / "all" means every applicable-or-unknown family on this surface

@@ -104,6 +104,7 @@ _SKILL_PHRASINGS: dict[str, tuple[str, ...]] = {
         "cross origin misconfiguration",
     ),
     "csrf": ("csrf", "cross site request forgery"),
+    "csv_injection": ("csv injection", "formula injection", "spreadsheet injection"),
     "header_injection": ("header injection", "host header", "crlf"),
     "http_request_smuggling": ("request smuggling", "desync"),
     "idor": ("idor", "object level authorization", "bola", "direct object reference"),
@@ -129,6 +130,7 @@ _SKILL_PHRASINGS: dict[str, tuple[str, ...]] = {
     "prototype_pollution": ("prototype pollution",),
     "race_conditions": ("race condition", "toctou"),
     "rce": ("rce", "remote code execution", "code execution", "command injection"),
+    "second_order_injection": ("second order", "second-order", "stored injection"),
     "semantic_confusion": (
         "semantic confusion",
         "parser differential",
@@ -139,6 +141,7 @@ _SKILL_PHRASINGS: dict[str, tuple[str, ...]] = {
     "ssrf": ("ssrf", "server side request forgery"),
     "ssti": ("ssti", "template injection"),
     "subdomain_takeover": ("subdomain takeover",),
+    "waf_evasion": ("waf", "waf bypass", "filter evasion", "block handling"),
     "weak_password_detection": ("password", "credential", "brute force"),
     "xss": ("xss", "cross site scripting", "script injection"),
     "xxe": ("xxe", "xml external entity", "xml entity"),

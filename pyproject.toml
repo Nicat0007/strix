@@ -352,7 +352,7 @@ ignore = [
 "strix/tools/race_executor/tools.py" = ["PLR0911", "PLR0912", "PLR0915", "PLR0917", "SLF001"]
 # Coverage matrix: assessment tools expose many optional fields as their schema
 # (PLR0913/0917); the planner reads attack_surface/hypotheses host-side (SLF001).
-"strix/tools/coverage_matrix/tools.py" = ["PLR0911", "PLR0913", "PLR0917", "SLF001"]
+"strix/tools/coverage_matrix/tools.py" = ["PLR0911", "PLR0912", "PLR0913", "PLR0917", "SLF001"]
 # Component research: record_* tools expose the advisory fields as their schema
 # (PLR0913/0917); SLF001 is the deliberate reuse of attack_surface's redactor.
 "strix/tools/component_research/tools.py" = ["PLR0911", "PLR0913", "PLR0917", "SLF001"]

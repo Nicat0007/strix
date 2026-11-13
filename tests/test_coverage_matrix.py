@@ -82,6 +82,30 @@ def test_formerly_missing_families_now_have_a_resolved_methodology() -> None:
     assert not [f for f, e in FAMILY_MAP.items() if e["capability"] == "missing"]
 
 
+def test_newly_planned_classes_are_in_the_matrix_vocabulary() -> None:
+    # Classes the matrix previously never PLANNED (so they were silently never
+    # assessed) are now first-class families with a resolving skill.
+    skills = get_all_skill_names()
+    for fam in ("open_redirect", "header_injection", "csv_injection",
+                "llm_prompt_injection", "subdomain_takeover"):
+        assert fam in FAMILIES, f"{fam} not planned by the matrix"
+        assert FAMILY_MAP[fam]["skill"] in skills, f"{fam} skill does not resolve"
+    # The executors built this batch are labelled as executor-capable families.
+    for fam in ("ssti", "open_redirect", "rate_limit", "race_condition"):
+        assert FAMILY_MAP[fam]["capability"] == "executor"
+
+
+def test_route_signals_fire_for_newly_added_families() -> None:
+    _endpoint("https://app.test/login", params=[{"name": "next"}])          # redirect-shaped
+    _endpoint("https://app.test/admin/export", params=[{"name": "fmt"}])     # export route
+    _endpoint("https://app.test/api/chat", method="POST", params=[{"name": "message"}])  # LLM
+    plan_coverage_impl(create_hypotheses=False)
+    route_fams = {c["family"] for c in query_impl(surface_type="route", limit=1000)["cells"]}
+    assert "open_redirect" in route_fams
+    assert "csv_injection" in route_fams
+    assert "llm_prompt_injection" in route_fams
+
+
 # --------------------------------------------------------------------------- #
 # not_applicable needs evidence
 # --------------------------------------------------------------------------- #
