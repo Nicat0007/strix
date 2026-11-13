@@ -3492,3 +3492,149 @@ the first commit attempt fed `git commit -F -` a truncated message through a
 heredoc the Windows→WSL shell layer mangled on a `(` paren; caught it (the
 diff/content was always the correct 4 files), amended the message from a file
 before pushing — a tooling hiccup, not a content problem.
+
+## 31. BLACK-BOX EXECUTOR + HARDENING BATCH — OOB / OPEN-REDIRECT / SSTI /
+    RATE-LIMIT / RACE EXECUTORS + SCOPE EGRESS FIREWALL (BLACKBOX #7-#12,
+    IMPLEMENTED, TESTED, COMMITTED — NOT PUSHED)
+
+New track from a capability-gap audit of the black-box arsenal: the §29
+executors cover request/response classes (SQLi/XSS/authorization) but leave
+the highest-value *blind* and *timing* classes with no deterministic
+executor, and scope is enforced only by agent convention. Six additive
+pieces, each the §21-§29 standard (sqli_executor as the template: proxy
+retrieve → scope-check-before-traffic → bounded op → `needs_validation`
+never auto-`confirmed` → record on the hypotheses worklist → shared
+attempt-budget ledger → secrets never returned), each a new tool with no
+change to any existing tool's behavior, each tested with injected
+providers (no network) and committed separately. Verified I **can** run the
+WSL venv pytest from here (`wsl -d Ubuntu -- bash -lc 'venv/bin/python -m
+pytest …'`), so these were genuinely test-green, not assumed.
+
+**The five executors (all in `strix/tools/<name>/tools.py`, registered in
+`_BASE_TOOLS`, stateless — they record through the already-hydrated
+`hypotheses` store, so no new `hydrate_*`):**
+
+- **#7 `run_oob_test`** (`oob_executor`) — the biggest gap: blind/out-of-band
+  egress (blind SSRF/XXE/RCE/OOB-SQLi/SSTI/deserialization/NoSQLi). Allocates
+  a **per-attempt unique interactsh canary**, injects a class payload (or an
+  agent `{OOB}`/`{OOB_URL}` template; `body_raw` replaces the whole body for
+  an XXE SYSTEM-entity doc) at one location, replays once, polls and
+  correlates **only that attempt's token**. Callback = `needs_validation`
+  (egress proven, and the validation note explicitly says to confirm the
+  source IP is the target server, not the tester's own egress — a client-side
+  fetch calls back too); no callback = `testing`, never `ruled_out`. OAST
+  provider/retrieve/send are injected; the default `_InteractshProvider`
+  (drives sandbox `interactsh-client`, optional self-hosted
+  `STRIX_INTERACTSH_SERVER`) + default proxy send are contract-based and
+  **need live sandbox verification** (the one piece I couldn't exercise
+  here). Skill pointers: `ssrf.md`, `xxe.md` (preferred path + manual
+  interactsh fallback), `root_agent.md` (blind/OOB hypothesis example).
+- **#8 `run_open_redirect_test`** (`open_redirect_executor`) — injects a
+  uniquely-marked off-origin target, replays once, classifies the redirect by
+  whether it targets the marker via the `Location` header (parsed
+  **browser-lenient** so `//h`, `https:/h`, `\h`, `https:h` bypass shapes are
+  caught) or a meta-refresh / JS `location` in the body (lower-confidence
+  body-based lead). Reflected redirect = `needs_validation` (prove OAuth token
+  theft / SSRF / phishing); no redirect = `testing`. Skill pointer:
+  `open_redirect.md`.
+- **#9 `run_ssti_test`** (`ssti_executor`) — injects per-engine arithmetic
+  polyglots (Jinja2/Twig, Freemarker/EL/SpEL, ERB/Ruby, Smarty, Razor), each
+  with a **distinct large product** so a hit maps to the engine, replays once,
+  and separates real **evaluation** (product present, literal expr absent →
+  `needs_validation`) from mere **reflection** (literal echoes back → an XSS
+  lead, `testing`, re-route to `xss.md`). Arithmetic hit is never `confirmed`
+  — escalate to the engine's RCE gadget to prove impact. Skill pointer:
+  `ssti.md`.
+- **#10 `run_rate_limit_test`** (`rate_limit_executor`) — the room101 gap. A
+  rate-limit **PRESENCE** test, explicitly **not** a brute-force: replays the
+  **identical** request a bounded, paced N times, records if/when throttling
+  fires (429/403/Retry-After/"too many"/captcha), then — if it fired — a
+  second pass **rotating `X-Forwarded-For`/`X-Real-IP`/`X-Client-IP`** to test
+  an IP-rotation bypass in one call. No limit / header bypass =
+  `needs_validation`; a fired limit = `testing`. The actual OTP/password
+  brute-force is the separate, explicitly-authorized step the agent runs
+  *after* this confirms the endpoint is unthrottled. Skill pointer:
+  `weak_password_detection.md`.
+- **#11 `run_race_test`** (`race_executor`) — fires a bounded number of
+  identical copies of a state-changing request concurrently (`asyncio.gather`)
+  and counts successes (agent-supplied success/failure markers, or a default
+  2xx). ≥2 successes on an operation the hypothesis asserts is once-only =
+  `race_suspected` → `needs_validation` (prove the durable effect: two
+  redemptions, a negative balance); exactly one = `no_race` → `testing`; zero
+  = `inconclusive` → `testing`. **Stated limitation:** high-concurrency
+  parallel send over the proxy, NOT a true single-packet/last-byte-sync attack
+  — for a tight window use Turbo Intruder by hand. Skill pointer:
+  `race_conditions.md`.
+
+**#12 — scope egress firewall (`strix/runtime/scope_firewall.py`, the one
+hardening piece, done LAST and most carefully because it touches network
+bring-up):** turns the agent-honored scope boundary into a hard one at the
+network layer. Two hard promises, so it cannot degrade current quality:
+**OFF by default** (`STRIX_SCOPE_FIREWALL` unset → new
+`ScopeFirewallSettings.enabled=False`) is a pure no-op that execs nothing
+(byte-identical behavior for anyone not opted in); **fail-open when on** (no
+NET_ADMIN, iptables missing, nothing resolvable, exec error, non-zero exit →
+warn + leave egress OPEN, never break the scan; an empty allowlist is refused
+rather than installed as a deny-all brick). `resolve_scope_to_cidrs` resolves
+in-scope hosts host-side to `ip/32`(`/128`) CIDRs (skips path/white-box
+targets and **wildcards** — a documented IP-allowlist limitation — literal
+IPs pass through); `build_iptables_script` builds a dedicated `STRIX_EGRESS`
+chain allowing loopback/established/DNS **before** the default reject, never
+setting a restrictive policy on `OUTPUT` itself. Wired in `runner.py` right
+after the sandbox session is ready, guarded by the flag. **EXPERIMENTAL:** the
+iptables install itself needs a live NET_ADMIN sandbox to verify; everything
+else (resolution / script-building / disabled-no-op / every fail-open path)
+is unit-tested. Note added to `root_agent.md`'s Program Scope that the
+boundary is agent-honored regardless and the firewall is an optional
+fail-open backstop.
+
+**Tests:** `tests/test_{oob,open_redirect,ssti,rate_limit,race}_executor.py`
+(19+11+13+10+8 = 61) and `tests/test_scope_firewall.py` (10) — all pass; ruff
+clean on every new file; each executor's pure helpers (scope, injection,
+classification) and full orchestration (wrong-category / out-of-scope-no-send
+/ missing / injection-fail / send-fail / positive / negative / budget-exhaust
+/ cancellation / secret-redaction) are covered with injected providers. Added
+`scope_firewall=SimpleNamespace(enabled=False)` to the six runner-test
+settings stubs (§24 Piece-1 discipline) so the new settings read never becomes
+a latent breakage there. `pyproject.toml` per-file ignores mirror the other
+executors (PLR0911/0912/0915/0917 for the branchy orchestration + agent-facing
+schema, SLF001 for deliberate reuse of `oob_executor`/`open_redirect_executor`
+scope/injection/send helpers). `_BASE_TOOLS` grew 71 → 76.
+
+**Pre-existing suite baseline (confirmed by stashing on clean HEAD):** the full
+suite now has **19 failures that are identical on `main`** — the tiered-routing
+work added `settings.llm.root_model` / per-agent model plumbing to `runner.py`
+and did NOT update the `types.SimpleNamespace` settings stubs in
+`test_runner_*` / `test_attack_surface_inventory`, so those crash at
+`runner.py`'s `root_model` read (the §24 Piece-1 fixture-gap pattern, at
+larger scale), plus the long-documented `test_pricing`/`test_cost_tracking`
+litellm-alias drift and a `test_report_coverage`/`test_context_budget` one.
+**None introduced by this batch** (every failing node fails identically with
+this work stashed). Worth a small dedicated fixup commit later — add
+`root_model=None` + the per-agent model fields to those stubs — but out of
+scope for this executor/firewall track.
+
+**Not pushed** (matching the §28/§29 "committed locally, not pushed"
+convention — the operator pushes). Commits: `5d101b0` (#7), `09f61aa` (#8),
+`e0c078a` (#9), `d652b7e` (#10), `297ef79` (#11), `fcde35d` (#12). The one
+genuine follow-up a future session owes: **live-verify #7's interactsh
+provider in the sandbox** (parse a real `interactsh-client -json` boot line
+against `_DOMAIN_RE`) and the default proxy `replay_send_raw`/`_send_and_capture`
+path, since those are the only contract-based (not here-testable) seams in the
+batch.
+
+**Note for a future session — undocumented pre-this-batch tools.** While
+auditing, found that several §29/§30-era tools were never written up in this
+file: `coverage_matrix` (`plan_coverage`/`next_coverage_task`/`assess_coverage`/
+`list_coverage_gaps`/`mark_families_blocked`/`query_coverage_matrix`),
+`authorization_executor` (`run_authorization_test`/`query_cross_actor_access`),
+`xss_executor` (`run_xss_test`), `session_ingest` (`ingest_session`),
+`captured_requests` (`import_captured_request`/`query_captured_requests`, Burp
+integration), and `component_research`
+(`record_component`/`record_advisory_candidate`/`query_component_research`), plus
+skills `analysis/family_assessment.md`, `custom/underserved_families.md`,
+`custom/component_research.md`, `custom/client_bundle_analysis.md`,
+`vulnerabilities/second_order_injection.md`, `vulnerabilities/waf_evasion.md`.
+They are real, wired, and tested — just not described above. Not backfilled
+here (out of scope for this batch); flagged so the architecture map is known
+to be behind the code.
