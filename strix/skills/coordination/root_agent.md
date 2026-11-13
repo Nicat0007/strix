@@ -88,6 +88,14 @@ exhaustive table:
   `path_traversal_lfi_rfi.md`).
 - A reachable admin panel → default/weak creds, auth bypass
   (`weak_password_detection.md`, `broken_function_level_authorization.md`).
+- A URL/host/XML/template/command sink whose only observable is a *server-initiated
+  callback* (a `url=`/`webhook=` fetcher, an XML upload parser, a server-side
+  template or command context) → **blind / out-of-band** SSRF/XXE/RCE/SSTI/OOB-SQLi.
+  These are invisible to a request/response test; drive them through the
+  **`run_oob_test`** executor (`ssrf.md`/`xxe.md`), which injects a per-attempt
+  unique OAST canary, replays once, and correlates only that attempt's callback. A
+  callback is `needs_validation` (egress proven), never confirmed; no callback is
+  `testing`, never ruled out.
 
 For a `*.gov.az` target, the `gov_az_mental_model` four patterns and the P0
 entry-point keyword scores *are* this starting hypothesis set — file them first.

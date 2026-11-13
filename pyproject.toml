@@ -258,6 +258,8 @@ ignore = [
 "tests/test_authorization_executor.py" = ["ARG001"]
 # Injected http/browser provider fakes ignore some args; _embed branches by context.
 "tests/test_xss_executor.py" = ["ARG001", "PLR0911"]
+# Injected retrieve/send provider fakes ignore some args by design.
+"tests/test_oob_executor.py" = ["ARG001", "ARG002"]
 # Opt-in live sandbox integration: strix runtime imported lazily inside the gated
 # test (PLC0415); the embedded fixture server source has long lines (E501); docker
 # invoked by name (S607).
@@ -316,6 +318,11 @@ ignore = [
 # reuse of sqli_executor/hypotheses/attack_surface internals (scope, budget,
 # redaction) rather than duplicating them.
 "strix/tools/xss_executor/tools.py" = ["PLR0911", "PLR0912", "PLR0915", "PLR0917", "SLF001"]
+# OOB/OAST executor: run_oob_test's params are its agent-facing schema (PLR0917);
+# the orchestration and single-location value injection are inherently branchy
+# (PLR0911/0912/0915); SLF001 is deliberate reuse of crawl_executor transport
+# helpers and attack_surface/hypotheses internals (scope, budget, redaction).
+"strix/tools/oob_executor/tools.py" = ["PLR0911", "PLR0912", "PLR0915", "PLR0917", "SLF001"]
 # Coverage matrix: assessment tools expose many optional fields as their schema
 # (PLR0913/0917); the planner reads attack_surface/hypotheses host-side (SLF001).
 "strix/tools/coverage_matrix/tools.py" = ["PLR0911", "PLR0913", "PLR0917", "SLF001"]

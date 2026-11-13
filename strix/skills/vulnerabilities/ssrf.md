@@ -123,11 +123,21 @@ Server-Side Request Forgery enables the server to reach networks and services th
 
 ## Blind SSRF
 
-- Use OAST (DNS/HTTP) to confirm egress. `interactsh-client -v` (running
-  in the sandbox) gives you a unique `*.oast.fun` domain; embed it in
-  the URL parameter and watch the interactsh stdout for the inbound
-  DNS/HTTP hit. Each invocation yields a fresh domain — restart between
-  payloads if you need to correlate hits to a specific request.
+- **Preferred path — `run_oob_test`.** For a blind-SSRF hypothesis with a
+  captured request, call `run_oob_test(hypothesis_id=..., request_ref=...,
+  injection_location="query", param_name="url")`. It allocates a canary unique to
+  that one attempt, injects it at the named location, replays the request once,
+  waits bounded, and correlates ONLY that attempt's callback — so a hit is never
+  confused with another test's, and the result is recorded on the hypothesis
+  worklist automatically. A callback is `needs_validation` (egress proven), never
+  confirmed; no callback is `testing`, never ruled out. Supply a custom
+  `payload_template` (with `{OOB}`/`{OOB_URL}`) for gopher/dict/other-protocol or
+  header-injected variants.
+- **Manual fallback.** When the executor can't reach the surface (a request you
+  drove in `agent_browser`, a non-URL sink), use OAST by hand: `interactsh-client
+  -v` (in the sandbox) gives a unique `*.oast.fun` domain; embed it and watch the
+  interactsh stdout for the inbound DNS/HTTP hit. Each invocation yields a fresh
+  domain — restart between payloads to correlate hits to a specific request.
 - Derive internal reachability from timing, response size, TLS errors, and ETag differences
 - Build a port map by binary searching timeouts (short connect/read timeouts yield cleaner diffs)
 
