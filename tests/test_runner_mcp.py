@@ -35,6 +35,7 @@ def _settings() -> Any:
         ),
         runtime=types.SimpleNamespace(max_context_images=3),
         negative_knowledge=types.SimpleNamespace(enabled=False),
+        scope_firewall=types.SimpleNamespace(enabled=False),
     )
 
 

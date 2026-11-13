@@ -47,6 +47,7 @@ from strix.core.paths import run_dir_for, runtime_state_dir
 from strix.core.sessions import open_agent_session
 from strix.report.state import get_global_report_state
 from strix.runtime import session_manager
+from strix.runtime.scope_firewall import apply_scope_egress_firewall
 from strix.telemetry.logging import set_scan_id, setup_scan_logging
 from strix.tools.output_store import (
     WORKSPACE_SPILL_DIR,
@@ -397,6 +398,14 @@ async def run_strix_scan(
         targets = scan_config.get("targets") or []
         scan_mode = str(scan_config.get("scan_mode") or "deep")
         is_whitebox = is_whitebox_targets(targets)
+        # Opt-in (default OFF -> pure no-op), fail-open network-layer scope egress
+        # allowlist: turns the agent-honoured scope boundary into a hard one when
+        # explicitly enabled, and never breaks a scan if it can't install.
+        await apply_scope_egress_firewall(
+            sandbox_session,
+            build_scan_targets(scan_config),
+            enabled=settings.scope_firewall.enabled,
+        )
         diff_scope = scan_config.get("diff_scope")
         is_diff_scoped = bool(isinstance(diff_scope, dict) and diff_scope.get("active"))
         skills = list(scan_config.get("skills") or [])

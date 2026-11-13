@@ -159,6 +159,24 @@ class NegativeKnowledgeSettings(BaseSettings):
     enabled: bool = Field(default=True, alias="STRIX_NEGATIVE_KNOWLEDGE")
 
 
+class ScopeFirewallSettings(BaseSettings):
+    """Opt-in, fail-open network-layer scope egress allowlist for the sandbox.
+
+    OFF by default: when disabled (the default), nothing is installed and the
+    sandbox's egress is unchanged — behaviour is byte-identical to before. When
+    explicitly enabled, iptables OUTPUT rules default-DROP egress except to the
+    operator-authorized targets (resolved to IPs host-side), loopback,
+    established connections and DNS — a hard guarantee that out-of-scope egress
+    cannot happen, on top of the agent-honoured scope discipline. EXPERIMENTAL:
+    any failure fails OPEN (logs a warning, leaves egress open) rather than
+    breaking the scan; verify live in the sandbox before relying on it.
+    """
+
+    model_config = _BASE_CONFIG
+
+    enabled: bool = Field(default=False, alias="STRIX_SCOPE_FIREWALL")
+
+
 class IntegrationSettings(BaseSettings):
     model_config = _BASE_CONFIG
 
@@ -194,5 +212,6 @@ class Settings(BaseSettings):
     negative_knowledge: NegativeKnowledgeSettings = Field(
         default_factory=NegativeKnowledgeSettings
     )
+    scope_firewall: ScopeFirewallSettings = Field(default_factory=ScopeFirewallSettings)
     integrations: IntegrationSettings = Field(default_factory=IntegrationSettings)
     viewer: ViewerSettings = Field(default_factory=ViewerSettings)

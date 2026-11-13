@@ -23,6 +23,7 @@ from strix.config.settings import (
     LlmSettings,
     NegativeKnowledgeSettings,
     RuntimeSettings,
+    ScopeFirewallSettings,
     Settings,
     TelemetrySettings,
 )
@@ -35,6 +36,7 @@ __all__ = [
     "LlmSettings",
     "NegativeKnowledgeSettings",
     "RuntimeSettings",
+    "ScopeFirewallSettings",
     "Settings",
     "TelemetrySettings",
     "apply_config_override",

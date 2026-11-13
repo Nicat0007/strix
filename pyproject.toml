@@ -268,6 +268,8 @@ ignore = [
 "tests/test_rate_limit_executor.py" = ["ARG001", "ARG002"]
 # Injected retrieve/send provider fakes ignore some args by design.
 "tests/test_race_executor.py" = ["ARG001", "ARG002"]
+# The fake sandbox session's exec signature mirrors the real one; some args unused.
+"tests/test_scope_firewall.py" = ["ARG002"]
 # Opt-in live sandbox integration: strix runtime imported lazily inside the gated
 # test (PLC0415); the embedded fixture server source has long lines (E501); docker
 # invoked by name (S607).
