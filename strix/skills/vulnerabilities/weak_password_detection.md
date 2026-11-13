@@ -168,6 +168,19 @@ This is the home of the `rate_limit` family — a per-endpoint methodology, not 
 footnote to brute-force. Its value is almost never standalone; it's what the
 bypass *unlocks* (OTP brute → ATO, password spray, enumeration).
 
+> **Preferred path — `run_rate_limit_test`.** For a `weak_password_detection`
+> hypothesis with a captured OTP/login/reset request, call
+> `run_rate_limit_test(hypothesis_id=..., request_ref=...)`. It replays the
+> IDENTICAL request a bounded, paced number of times to see if/when throttling
+> fires (429/403/Retry-After/"too many"/captcha), then — if a limit fires —
+> replays again rotating `X-Forwarded-For`/`X-Real-IP`/`X-Client-IP` to test an
+> IP-rotation bypass in one call. It is a rate-limit **presence** test, NOT a
+> brute-force (it never guesses codes/passwords): no limit or a header bypass is
+> `needs_validation`, a fired limit is `testing`. The actual OTP/password
+> brute-force (with the keyspace) is the separate, explicitly-authorized step you
+> run *after* this confirms the endpoint is unthrottled. The attempt is recorded
+> on the worklist automatically.
+
 - **Classify the control first — "no rate limit" without this is a false
   negative.** Four distinct states: (1) **hard lockout** (account disabled after
   N), (2) **soft IP-throttle** (429 by source IP), (3) **CAPTCHA-injection**

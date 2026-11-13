@@ -96,6 +96,7 @@ from strix.tools.proxy.tools import (
     view_request,
     view_sitemap_entry,
 )
+from strix.tools.rate_limit_executor.tools import run_rate_limit_test
 from strix.tools.reporting.tool import (
     create_dependency_report,
     create_vulnerability_report,
@@ -665,6 +666,7 @@ _BASE_TOOLS: tuple[Tool, ...] = (
     run_oob_test,
     run_open_redirect_test,
     run_ssti_test,
+    run_rate_limit_test,
     ingest_session,
     plan_coverage,
     assess_coverage,
