@@ -133,6 +133,19 @@ Concurrency bugs enable duplicate state changes, quota bypass, financial abuse, 
 
 ## Testing Methodology
 
+> **Preferred path — `run_race_test`.** For a `race_conditions` hypothesis with a
+> captured state-changing request, call
+> `run_race_test(hypothesis_id=..., request_ref=..., success_markers=["coupon applied"],
+> failure_markers=["already used"])`. It fires a bounded number of identical copies
+> concurrently (asyncio.gather over the proxy) and reports how many SUCCEEDED: ≥2
+> successes on an operation you assert is once-only is `needs_validation` (prove
+> the durable effect — two redemptions, a negative balance); exactly one is
+> `testing`, never `ruled_out`. It is high-concurrency parallel send, NOT a true
+> single-packet attack — for a very tight window use Turbo Intruder's single-packet
+> mode by hand. It sends N state-changing requests, so pick a safe/reversible
+> operation and have authorization. The attempt is recorded on the worklist
+> automatically.
+
 1. **Model invariants** - Conservation of value, uniqueness, maximums for each workflow
 2. **Identify reads/writes** - Where they occur (service, DB, cache)
 3. **Baseline** - Single requests to establish expected behavior
