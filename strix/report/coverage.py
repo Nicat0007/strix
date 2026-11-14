@@ -98,6 +98,7 @@ _SKILL_PHRASINGS: dict[str, tuple[str, ...]] = {
         "cross origin state",
     ),
     "business_logic": ("business logic", "logic flaw"),
+    "cache_poisoning": ("cache poisoning", "cache deception", "unkeyed"),
     "cors_misconfiguration": (
         "cors",
         "cross origin resource sharing",

@@ -157,7 +157,7 @@ FAMILY_MAP: dict[str, dict[str, Any]] = {
                          "prereqs": ["reachable admin/debug/config surface"]},
     "exposed_secrets": {"skill": "information_disclosure", "capability": "agent_tools",
                         "prereqs": ["retrievable JS/responses/artifacts"]},
-    "cache_poisoning": {"skill": "underserved_families", "capability": "agent_tools",
+    "cache_poisoning": {"skill": "cache_poisoning", "capability": "executor",
                         "prereqs": ["a cache fronting the origin", "an unkeyed input to probe"]},
     "request_smuggling": {"skill": "http_request_smuggling", "capability": "agent_tools",
                           "prereqs": ["a front-end/back-end proxy chain"]},
@@ -183,7 +183,7 @@ FAMILY_MAP: dict[str, dict[str, Any]] = {
 # agent_tools as their primary capability (the executor is one of several steps).
 _EXECUTOR_FAMILIES = {
     "sqli", "xss", "idor_bola", "bfla", "ssti", "open_redirect", "rate_limit", "race_condition",
-    "mass_assignment", "graphql",
+    "mass_assignment", "graphql", "cache_poisoning",
 }
 # Above this many distinct origins, seeding all 40 families on every origin is an
 # O(origins*40) grid the agent then works cell-by-cell — the matrix's biggest

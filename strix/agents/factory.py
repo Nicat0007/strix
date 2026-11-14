@@ -35,6 +35,7 @@ from strix.tools.attack_surface.tools import (
     record_endpoint_test,
 )
 from strix.tools.authorization_executor.tools import run_authorization_test
+from strix.tools.cache_poisoning_executor.tools import run_cache_poisoning_test
 from strix.tools.captured_requests.tools import (
     import_captured_request,
     query_captured_requests,
@@ -673,6 +674,7 @@ _BASE_TOOLS: tuple[Tool, ...] = (
     run_race_test,
     run_mass_assignment_test,
     run_graphql_test,
+    run_cache_poisoning_test,
     ingest_session,
     plan_coverage,
     assess_coverage,

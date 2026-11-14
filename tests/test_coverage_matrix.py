@@ -73,8 +73,9 @@ def test_formerly_missing_families_now_have_a_resolved_methodology() -> None:
     # agent-driven skill (no dedicated executor) — not left as silent gaps and
     # not manufactured not_applicable.
     skills = get_all_skill_names()
-    for fam in ("ldap_injection", "xpath_injection", "parameter_pollution",
-                "websocket", "cache_poisoning"):
+    # cache_poisoning graduated to a dedicated skill + executor (BLACKBOX #16);
+    # the rest remain resolved via the shared underserved-families methodology.
+    for fam in ("ldap_injection", "xpath_injection", "parameter_pollution", "websocket"):
         entry = FAMILY_MAP[fam]
         assert entry["skill"] == "underserved_families" and entry["skill"] in skills
         assert entry["capability"] == "agent_tools"  # reachable path, no executor
@@ -91,7 +92,8 @@ def test_newly_planned_classes_are_in_the_matrix_vocabulary() -> None:
         assert fam in FAMILIES, f"{fam} not planned by the matrix"
         assert FAMILY_MAP[fam]["skill"] in skills, f"{fam} skill does not resolve"
     # The executors built this batch are labelled as executor-capable families.
-    for fam in ("ssti", "open_redirect", "rate_limit", "race_condition"):
+    for fam in ("ssti", "open_redirect", "rate_limit", "race_condition",
+                "mass_assignment", "graphql", "cache_poisoning"):
         assert FAMILY_MAP[fam]["capability"] == "executor"
 
 
