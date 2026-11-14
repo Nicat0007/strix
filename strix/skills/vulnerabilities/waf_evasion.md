@@ -64,6 +64,72 @@ you usually only need to disguise that one token.
    scoring; for request smuggling / desync against the WAF see
    `http_request_smuggling.md`.
 
+## Cloudflare & CDN — vendor-specific bypass and origin discovery
+
+A cloud WAF (Cloudflare, Akamai, AWS WAF/CloudFront, Imperva/Incapsula, F5,
+Fastly, Sucuri, Azure Front Door) sits at the **edge**. The highest-yield bypass
+is almost never out-transforming the ruleset — it is reaching the **origin
+directly** so the WAF is never in the path at all. Do origin discovery first.
+
+### Origin-IP discovery (bypass the edge entirely)
+
+The origin is often a plain server with no WAF; find its real IP and send
+`Host: <target>` straight to it (`curl --resolve target:443:<origin-ip>` / set the
+`Host` header). Techniques, cheapest first:
+
+- **Historical DNS / pre-CDN records.** SecurityTrails, `crt.sh`, DNS history,
+  `gau`/`waybackurls` — the A record from before Cloudflare was switched on
+  frequently still serves. Cross-link `reconnaissance/asset_discovery.md`/`dorking.md`.
+- **Non-proxied sibling records.** MX, `mail.`, `ftp.`, `cpanel.`, `direct.`,
+  `origin.`, `dev.`/`staging.`, `vpn.`, autodiscover — subdomains admins forget to
+  proxy resolve straight to origin IP (and often share the netblock). Enumerate
+  every subdomain (`subfinder`) and check which resolve to a **non-CDN** IP
+  (`httpx -cdn` flags CDN IPs; the non-flagged ones are leads).
+- **Certificate / favicon / JARM pivot.** Search Censys/Shodan by the origin's TLS
+  cert `fingerprint_sha256`, favicon hash (`httpx -favicon`), or JARM — hosts
+  outside Cloudflare's ranges serving the same cert/favicon are the origin.
+- **SSRF / header leaks.** An SSRF on the app, a verbose error, a `Location`/
+  `X-Backend`/`Via`/`X-Served-By` header, a git/config leak, or an email header
+  (`Received:`) that discloses the internal IP.
+- **Validate the origin actually serves the app** (not a shared-host 403): the
+  same page/title/cookie with `Host: target`. If Cloudflare "Authenticated Origin
+  Pulls" / an allowlist is enforced at origin, direct access 403s — note it and
+  fall back to edge transforms.
+
+### Cloudflare-specific notes
+
+- **`CF-Connecting-IP`/`X-Forwarded-For` spoofing does NOT fool Cloudflare's own
+  WAF** (CF sets/overwrites them). It CAN fool an **origin** that trusts
+  `X-Forwarded-For` for its own allowlist/rate-limit once you reach origin, or a
+  second WAF behind CF — so it's an *origin*-side trick, not a CF-edge one.
+- CF rate-limiting is keyed on the real client IP (from the TLS connection), so
+  `X-Forwarded-For` rotation doesn't reset it — rotate actual egress (cloud IPs)
+  or pace; see `weak_password_detection.md` / `run_rate_limit_test`.
+- **Managed-ruleset bypasses** that recur: body in a content-type CF doesn't
+  inspect (`text/plain`, odd `multipart` boundaries, `application/xml` when the
+  rule expects JSON), the payload in a JSON **key** rather than value, deeply
+  nested JSON, trailing junk after a valid value, HTTP/2 pseudo-header tricks,
+  and `%0d%0a`/unicode in the tripping token. Always benign-control first.
+- The JS/managed challenge and Turnstile are solvable only in a real browser —
+  hand off to `agent_browser`; an API/mobile endpoint of the same app is often
+  **not** challenge-gated and is the better route.
+
+### Other vendors (quick tells + leanings)
+
+- **Akamai** (`X-Akamai-*`, `AkamaiGHost`): strong on encoding; lean on
+  request-shape / content-type confusion / HTTP/2 and origin discovery.
+- **AWS WAF / CloudFront** (`X-Amz-Cf-Id`, `X-Cache`): rule-based, size-limited
+  body inspection — oversize/duplicated body and param-pollution often slip; S3/
+  origin bucket misconfig is a frequent origin leak.
+- **Imperva/Incapsula** (`X-Iinfo`, `incap_ses` cookie): cookie/JS gate; lean on
+  encoding + origin discovery.
+- **F5 BIG-IP ASM** (`BIGipServer`/`TS` cookie): cookie-driven; verb tampering and
+  normalization differentials.
+
+Record the vendor (from `wafw00f`) on the surface so the chosen transforms are
+auditable, and treat origin discovery as a **recon task** that unblocks every
+class at once — not a per-payload fight.
+
 ## Reaching a 403'd path (access control, not a payload WAF)
 
 When the whole path is `403`/`401` (verb-independent), it's authorization, and a
