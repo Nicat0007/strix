@@ -30,6 +30,18 @@ Security testing for GraphQL APIs. Focus on resolver-level authorization, field/
 
 ## Reconnaissance
 
+> **Preferred first probe — `run_graphql_test`.** Once you have a captured
+> GraphQL request, call `run_graphql_test(hypothesis_id=..., request_ref=...)`.
+> It scope-checks, then sends three bounded probes — a minimal `__schema`
+> introspection query, a misspelled field (catches "Did you mean" suggestion
+> leakage even when introspection is off), and a two-query batch (detects
+> batching) — and reports which are enabled. Any enabled feature is
+> `needs_validation` (attack-surface / amplification), never confirmed: escalate
+> to object/field authz (`idor.md`/`broken_function_level_authorization.md`),
+> nested-query DoS, or batching-amplified brute-force and prove impact. It records
+> the attempt on the worklist automatically; the manual probes below remain for
+> deeper schema mapping and exploitation.
+
 **Endpoint Discovery**
 ```
 POST /graphql         {"query":"{__typename}"}

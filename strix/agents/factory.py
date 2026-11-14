@@ -64,6 +64,7 @@ from strix.tools.crawl_executor.tools import (
 )
 from strix.tools.file_context_cache.tools import query_file_summary, record_file_summary
 from strix.tools.finish.tool import finish_scan
+from strix.tools.graphql_executor.tools import run_graphql_test
 from strix.tools.hypotheses.tools import (
     create_hypothesis,
     query_hypotheses,
@@ -671,6 +672,7 @@ _BASE_TOOLS: tuple[Tool, ...] = (
     run_rate_limit_test,
     run_race_test,
     run_mass_assignment_test,
+    run_graphql_test,
     ingest_session,
     plan_coverage,
     assess_coverage,
