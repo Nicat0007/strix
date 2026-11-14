@@ -73,12 +73,16 @@ def test_formerly_missing_families_now_have_a_resolved_methodology() -> None:
     # agent-driven skill (no dedicated executor) — not left as silent gaps and
     # not manufactured not_applicable.
     skills = get_all_skill_names()
-    # cache_poisoning graduated to a dedicated skill + executor (BLACKBOX #16);
-    # the rest remain resolved via the shared underserved-families methodology.
-    for fam in ("ldap_injection", "xpath_injection", "parameter_pollution", "websocket"):
+    # cache_poisoning graduated to a skill + executor (#16); ldap/xpath/websocket
+    # graduated to dedicated deep skills; parameter_pollution remains on the
+    # shared underserved-families methodology.
+    assert FAMILY_MAP["parameter_pollution"]["skill"] == "underserved_families"
+    assert FAMILY_MAP["parameter_pollution"]["capability"] == "agent_tools"
+    assert "underserved_families" in skills
+    for fam in ("ldap_injection", "xpath_injection", "websocket"):
         entry = FAMILY_MAP[fam]
-        assert entry["skill"] == "underserved_families" and entry["skill"] in skills
-        assert entry["capability"] == "agent_tools"  # reachable path, no executor
+        assert entry["skill"] == fam and entry["skill"] in skills  # dedicated deep skill
+        assert entry["capability"] == "agent_tools"  # no executor, agent-driven
     # No family remains an unresolved capability gap.
     assert not [f for f, e in FAMILY_MAP.items() if e["capability"] == "missing"]
 
@@ -354,14 +358,14 @@ def test_worked_claim_is_not_reclaimed_after_resume(_stores: Path) -> None:
 def test_next_task_underserved_family_gets_methodology_skill() -> None:
     _endpoint("http://app.test/h")
     plan_coverage_impl(create_hypotheses=False)
-    underserved = {"ldap_injection", "xpath_injection", "parameter_pollution",
-                   "websocket", "cache_poisoning"}
+    # parameter_pollution is the remaining family on the shared methodology skill
+    # (ldap/xpath/websocket/cache graduated to dedicated skills/executors).
     seen = False
     for _ in range(60):
         tasks = next_coverage_task_impl(count=1)["tasks"]
         if not tasks:
             break
-        if tasks[0]["family"] in underserved:
+        if tasks[0]["family"] == "parameter_pollution":
             # Resolved to a concrete agent-driven skill (no executor), not null.
             assert tasks[0]["load_skill"] == "underserved_families"
             assert tasks[0]["shared_guidance"] == "analysis/family_assessment"

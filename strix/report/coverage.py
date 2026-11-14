@@ -117,6 +117,7 @@ _SKILL_PHRASINGS: dict[str, tuple[str, ...]] = {
     ),
     "insecure_deserialization": ("deserialization",),
     "insecure_file_uploads": ("file upload",),
+    "ldap_injection": ("ldap injection", "ldap"),
     "llm_prompt_injection": ("prompt injection",),
     "mass_assignment": ("mass assignment", "parameter binding"),
     "nosql_injection": ("nosql",),
@@ -144,6 +145,8 @@ _SKILL_PHRASINGS: dict[str, tuple[str, ...]] = {
     "subdomain_takeover": ("subdomain takeover",),
     "waf_evasion": ("waf", "waf bypass", "filter evasion", "block handling"),
     "weak_password_detection": ("password", "credential", "brute force"),
+    "websocket": ("websocket", "cswsh", "web socket"),
+    "xpath_injection": ("xpath injection", "xpath", "xquery"),
     "xss": ("xss", "cross site scripting", "script injection"),
     "xxe": ("xxe", "xml external entity", "xml entity"),
 }
