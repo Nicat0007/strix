@@ -3716,3 +3716,45 @@ run it here); every executor is unit-tested but unproven against real traffic.
 **Commits (not pushed):** `394012b` (#13), `5239123` (#14), `bb4be80` (#15),
 `add5052` (#16), `2aef3cf` (C5/C6), + this §32 write-up. No fake-precision score
 introduced anywhere across the batch.
+
+## 33. DEEPER-SCAN BATCH — WAF/CLOUDFLARE + THIN-CLASS DEPTH + GAP-TEST DEPTH
+    (SKILL-ONLY, IMPLEMENTED, TESTED, COMMITTED — NOT PUSHED)
+
+Follow-on to §31/§32, all skill-first (no new tools), three threads:
+
+- **WAF/Cloudflare bypass deepening** (`vulnerabilities/waf_evasion.md`, commit
+  `d3d9ce7`). New "Cloudflare & CDN — vendor-specific bypass and origin discovery"
+  section: **origin-IP discovery** as the primary bypass (historical/pre-CDN DNS,
+  non-proxied sibling records via `httpx -cdn`, cert/favicon/JARM pivot on
+  Censys/Shodan, SSRF/header leaks, validate-origin-serves-the-app) so the WAF is
+  skipped entirely; Cloudflare specifics (CF overwrites `CF-Connecting-IP`/`XFF`
+  so those are *origin*-side tricks not CF-edge; rate-limit keyed on real IP;
+  managed-ruleset content-type/JSON-key/nesting bypasses; challenge→`agent_browser`
+  or the non-gated API/mobile endpoint); per-vendor tells+leanings
+  (Akamai/AWS-WAF/Imperva/F5).
+- **Thin-class dedicated deep skills** (commit `3eda58b`). `websocket.md` (CSWSH
+  headline — cookie-auth handshake + no Origin check + no token → cross-origin
+  authenticated socket, proven by a real cross-origin read not a bare 101; plus
+  the message-layer middleware-skip trap: injection/IDOR-per-message/per-message
+  BFLA/auth-downgrade; handshake=HTTP-replayable vs stream=needs-wscat split),
+  `ldap_injection.md` (filter-tautology auth bypass + blind char-by-char boolean
+  extraction + DN/scope abuse), `xpath_injection.md` (tautology bypass + blind
+  **full-document** extraction since XPath has no row authz + XQuery `doc()`
+  file-read). All three graduated in `coverage_matrix` FAMILY_MAP from
+  `underserved_families` to their own skills (capability stays agent_tools — no
+  executor); `report/coverage.py` phrasings added; `test_coverage_matrix` updated
+  (only `parameter_pollution` remains on underserved). `underserved_families.md`
+  left as-is (still a fallback + serves HPP).
+- **Gap-testing depth** (commit `2b321b7`). `analysis/family_assessment.md` gained
+  a **Depth** section: a `tested` cell means the family's full technique catalog
+  was exercised on that surface, never one payload — exhaust the catalog, iterate
+  the executors across params/locations/techniques, **escalate every partial
+  signal** toward `needs_validation` (never round to a clean negative), **work
+  every block through `waf_evasion.md`'s ladder incl. origin discovery and re-run
+  the executor through the bypass before `blocked`** (never `ruled_out`), vary the
+  input *shape* not just the value, and chain. In `deep` mode this bar is
+  mandatory; in `quick` a bounded pass is `deferred`, never silently `tested`.
+  `scan_modes/deep.md` Phase 3 gained the matching depth-bar directive.
+
+Full suite: 1644 passed, 5 skipped, same **18 pre-existing** failures; skill-dir
++ coverage + report-coverage suites green. No Python/Dockerfile changes.
