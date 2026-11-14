@@ -1,6 +1,6 @@
 ---
 name: cache-poisoning
-description: Web cache poisoning and cache deception — an unkeyed input (a header the cache ignores when building the cache key, e.g. X-Forwarded-Host/-Scheme, or a path/query normalization quirk) influences a response that is then cached and served to OTHER (victim) requests. Two distinct bugs: poisoning (attacker stores a harmful response for a shared key) and deception (attacker tricks the cache into storing a victim's private/authenticated response at a cacheable path the attacker can then read).
+description: "Web cache poisoning and cache deception — an unkeyed input (a header the cache ignores when building the cache key, e.g. X-Forwarded-Host/-Scheme, or a path/query normalization quirk) influences a response that is then cached and served to OTHER (victim) requests. Two distinct bugs — poisoning (attacker stores a harmful response for a shared key) and deception (attacker tricks the cache into storing a victim's private/authenticated response at a cacheable path the attacker can then read)."
 ---
 
 # Web Cache Poisoning & Cache Deception

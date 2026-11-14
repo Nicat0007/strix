@@ -1,6 +1,6 @@
 ---
 name: xpath_injection
-description: XPath / XQuery injection — user input concatenated into an XPath query over an XML document or XML database, letting an attacker alter the query. Highest-value forms: authentication bypass via tautology (`' or '1'='1`, `' or 1=1 or ''='`), and blind char-by-char extraction of the ENTIRE document (XPath has no access control — one injectable query can read every node). Common behind XML-backed login, config/catalog lookups, and legacy SOAP/XML apps.
+description: "XPath / XQuery injection — user input concatenated into an XPath query over an XML document or XML database, letting an attacker alter the query. Highest-value forms — authentication bypass via tautology, and blind char-by-char extraction of the ENTIRE document (XPath has no access control, so one injectable query can read every node). Common behind XML-backed login, config/catalog lookups, and legacy SOAP/XML apps."
 ---
 
 # XPath / XQuery Injection

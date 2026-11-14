@@ -717,6 +717,19 @@ _BASE_TOOLS: tuple[Tool, ...] = (
     stop_agent,
 )
 
+#: Testing/crawling tools the ROOT orchestrator must never invoke itself (it
+#: delegates all testing to subagents — coordination/root_agent.md). Excluded
+#: from the root toolset only; children get the full set. Matched by tool name so
+#: it is robust to tool-object identity. Read-only analysis tools
+#: (query_cross_actor_access, passive_scan, ingest_session, record_endpoint, ...)
+#: are deliberately NOT here — the root legitimately uses those.
+_ROOT_FORBIDDEN_TOOL_NAMES: frozenset[str] = frozenset({
+    "run_sqli_test", "run_xss_test", "run_oob_test", "run_open_redirect_test",
+    "run_ssti_test", "run_mass_assignment_test", "run_graphql_test",
+    "run_cache_poisoning_test", "run_rate_limit_test", "run_race_test",
+    "run_authorization_test", "run_crawl_job",
+})
+
 
 # Extra tools registered for scan agents. Mirrors
 # ``strix.runtime.backends.register_backend``: register before the first
@@ -813,7 +826,18 @@ def build_strix_agent(
         # Yielding to the user is only meaningful when one is attached.
         agent_tools.append(respond_to_user)
     if is_root:
-        tools: list[Tool] = [*_BASE_TOOLS, *agent_tools, finish_scan]
+        # The root orchestrator never runs scanners/crawlers/fuzzers or sends
+        # payloads itself — it delegates all testing to subagents (see
+        # coordination/root_agent.md). Dropping the per-hypothesis executors and
+        # the crawler from the ROOT toolset enforces that contract AND trims the
+        # root's (longest-lived, most expensive) per-turn tool-schema cost — zero
+        # capability loss, since root is forbidden to call them. Children keep the
+        # full set (they test, and can spawn their own sub-agents).
+        root_base = [
+            t for t in _BASE_TOOLS
+            if getattr(t, "name", None) not in _ROOT_FORBIDDEN_TOOL_NAMES
+        ]
+        tools: list[Tool] = [*root_base, *agent_tools, finish_scan]
     else:
         tools = [*_BASE_TOOLS, *agent_tools, agent_finish]
     _ensure_unique_tool_names(tools)

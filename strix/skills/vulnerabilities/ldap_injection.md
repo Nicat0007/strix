@@ -1,6 +1,6 @@
 ---
 name: ldap_injection
-description: LDAP injection — user input concatenated into an LDAP search filter (RFC 4515) or a DN, letting an attacker alter the filter logic. Highest-value forms: authentication bypass via filter tautology (`*)(uid=*))(|(uid=*` / `*)(|(password=*)`), and blind attribute/value extraction by boolean/char-by-char filter manipulation. Common behind corporate login, address-book/people search, and group-membership checks.
+description: "LDAP injection — user input concatenated into an LDAP search filter (RFC 4515) or a DN, letting an attacker alter the filter logic. Highest-value forms — authentication bypass via filter tautology (e.g. a star-paren filter break), and blind attribute/value extraction by boolean/char-by-char filter manipulation. Common behind corporate login, address-book/people search, and group-membership checks."
 ---
 
 # LDAP Injection

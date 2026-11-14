@@ -1,6 +1,6 @@
 ---
 name: websocket
-description: WebSocket security — Cross-Site WebSocket Hijacking (CSWSH, the headline bug: a WS handshake authenticated only by cookies with no Origin check and no CSRF token lets an attacker page open an authenticated socket for the victim), plus message-layer flaws (injection/IDOR/authz inside WS messages that skip the REST middleware), missing per-message authorization, and transport downgrade. The handshake is an HTTP request (testable in the proxy); the message stream is not — it needs a real WS client.
+description: "WebSocket security — Cross-Site WebSocket Hijacking (CSWSH — the headline bug — a WS handshake authenticated only by cookies with no Origin check and no CSRF token lets an attacker page open an authenticated socket for the victim), plus message-layer flaws (injection/IDOR/authz inside WS messages that skip the REST middleware), missing per-message authorization, and transport downgrade. The handshake is an HTTP request (testable in the proxy); the message stream is not — it needs a real WS client."
 ---
 
 # WebSocket Security
