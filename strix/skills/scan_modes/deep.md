@@ -62,6 +62,20 @@ Use the application extensively as every user type to understand the full data l
 
 Test every input vector with every applicable technique.
 
+**Depth bar (deep mode makes `analysis/family_assessment.md`'s Depth section
+mandatory).** A cell is `tested` only when the family's **full technique catalog**
+was exercised on that surface — never after one payload. Concretely, for every
+`applicable` cell: iterate the dedicated executor across params/locations/
+techniques (not once), exhaust the matching vuln skill's Bypass/Techniques
+catalog, **escalate every partial signal** (reflection without execution, a 500,
+a timing/length wobble) toward `needs_validation` instead of rounding it to a
+clean negative, **work every block through `vulnerabilities/waf_evasion.md`'s
+ladder — including origin discovery — and re-run the executor through the bypass
+before the cell can be `blocked`** (`blocked` is never `ruled_out`), and vary the
+input *shape* (query→body→header→cookie→JSON, content-type, duplicate/array
+params), not just the value. A single blocked/negative payload is `deferred` or
+`blocked`, never `tested`.
+
 **Input Handling**
 - Multiple injection types: SQL, NoSQL, LDAP, XPath, command, template
 - Encoding bypasses: double encoding, unicode, null bytes
