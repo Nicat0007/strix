@@ -3638,3 +3638,81 @@ skills `analysis/family_assessment.md`, `custom/underserved_families.md`,
 They are real, wired, and tested — just not described above. Not backfilled
 here (out of scope for this batch); flagged so the architecture map is known
 to be behind the code.
+
+## 32. VULN-COVERAGE COMPLETENESS + B/C-TIER EXECUTORS (BLACKBOX #13-#16 +
+    C5/C6, IMPLEMENTED, TESTED, COMMITTED — NOT PUSHED)
+
+Follow-on to §31. Three threads: (1) close vuln-family coverage gaps so every
+real class is PLANNED and surfaced; (2) B-tier — add executors for the
+value-zone classes; (3) C-tier — reliability. All additive; `_BASE_TOOLS` grew
+76 → 79; full suite 1644 passed / 5 skipped / **18 pre-existing failures**
+(down one from §31's 19 — a pre-existing phrasings failure was fixed, see #13).
+
+**#13 — coverage-matrix completeness (the "surface many gaps" win).** The
+`coverage_matrix` guarantees "every family, every app", but a class absent from
+`FAMILIES` is never planned → silently never assessed. Added 5 real classes that
+had a skill but no family: **`open_redirect`** (had skill + the §31 #8 executor
+but wasn't a family!), **`llm_prompt_injection`** (the project's highest-value
+modern class, §6), **`header_injection`**, **`subdomain_takeover`**, and
+**`csv_injection`** (covered nowhere → new `vulnerabilities/csv_injection.md`
+skill). `FAMILY_MAP` entries + `_route_signals` detection (redirect-param →
+open_redirect, export-route → csv, chat/ai → llm) added. `report/coverage.py`
+gained phrasings for csv_injection AND the two pre-existing skills the phrasings
+test was already failing on (`second_order_injection`, `waf_evasion`) → that
+test went green, baseline 19→18. Capability upgraded agent_tools→executor for
+ssti/open_redirect/rate_limit/race_condition (the §31 executors).
+
+**B-tier executors (each: proxy retrieve → scope-check-before-traffic →
+mutate/probe → classify → `needs_validation` never auto-`confirmed` → record on
+hypotheses worklist → shared attempt budget → secrets never returned; all
+injected-provider unit-tested, no network):**
+
+- **#14 `run_mass_assignment_test`** (`mass_assignment_executor`) — the most
+  tool-able authenticated-logic class. Injects privileged fields (role/status/
+  owner_id/... as token-tagged strings, is_admin/verified/... as booleans) into a
+  captured create/update body (JSON-object or form), replays once, checks binding
+  in the write response + an optional re-read (`read_request_ref`). Bound
+  token-field → needs_validation (binding ≠ escalation); booleans sent but
+  confirmed behaviourally. 13 tests.
+- **#15 `run_graphql_test`** (`graphql_executor`) — three bounded probes:
+  `__schema` introspection, a misspelled field (catches "Did you mean"
+  suggestion leakage with introspection off), a two-query batch (batching). Any
+  enabled → needs_validation (attack-surface/amplification), escalate to
+  object/field authz / nested-query DoS / batching brute-force. 9 tests.
+- **#16 `run_cache_poisoning_test`** (`cache_poisoning_executor`) + new dedicated
+  `vulnerabilities/cache_poisoning.md` skill (graduated from `underserved_families`).
+  Two-step: inject each unkeyed header (X-Forwarded-Host/-Scheme/-Proto/X-Host/
+  X-Original-URL/...) with a unique inert marker, check reflection, then send ONE
+  CLEAN request to test whether the poisoned response was cached and served back.
+  Clean-served marker → needs_validation (prove the value is dangerous + the key
+  is shared, not a cache-buster). Reuses `rate_limit_executor._set_header`. 9
+  tests. `test_coverage_matrix` updated (cache_poisoning moved out of the
+  underserved list into the executor-capable assertions).
+
+**C-tier reliability (additive, zero regression):**
+
+- **C5 — self-hosted OAST wiring.** `run_oob_test` documented `STRIX_INTERACTSH_
+  SERVER`/`_TOKEN` but never read them (the default provider was built with no
+  server → always public interactsh, WAF-blocked/flaky). `_run_oob_impl` now
+  reads the env and passes it to the default `_InteractshProvider`. Unset env →
+  unchanged. +2 tests.
+- **C6 — WAF-evasion wired to every executor (skill-layer).** Retrofitting the
+  tested send/classify of all executors would risk quality, so instead a new
+  "Wiring every executor to this ladder" section in `vulnerabilities/waf_evasion.md`:
+  a 403/406/429/challenge in ANY executor result is worked (benign control → find
+  the tripping token → transform → RE-RUN the same executor through the bypass,
+  e.g. `run_sqli_test continuation="tamper:.."` or a fresh bypass `request_ref`/
+  encoded `payload_template`) and is only `blocked`, never `ruled_out`. Makes the
+  executors' block outputs actionable without touching their code.
+
+**Not done (flagged, lower priority):** WebSocket/CSWSH, LDAP/XPath/HPP still
+have only the brief `underserved_families` coverage (no dedicated skill/executor
+— WS needs a persistent-connection client, higher complexity/risk). The
+A-tier item from the prior advice — a **live end-to-end smoke test** of all
+executors against a deliberately-vulnerable target (Juice Shop/DVWA) — remains
+the single highest-value next step and needs the operator's sandbox (I cannot
+run it here); every executor is unit-tested but unproven against real traffic.
+
+**Commits (not pushed):** `394012b` (#13), `5239123` (#14), `bb4be80` (#15),
+`add5052` (#16), `2aef3cf` (C5/C6), + this §32 write-up. No fake-precision score
+introduced anywhere across the batch.
