@@ -59,6 +59,27 @@ Every scan needs one shared answer to "who is the attacker here, and what are th
 
 Either way you write it with the least information anyone on this scan will ever have, so expect it to be wrong somewhere. Subagents correct it with `amend_threat_model`, which appends an attributed addendum instead of overwriting — expect many of these on a black-box run, as authenticating, pivoting between roles, and reaching internal surfaces is exactly what turns inference into fact. Read the amendments back before you write the final report: an agent telling you a boundary you called trusted is attacker-reachable is a finding about your model, not a note. Only call `save_threat_model` again to fold accumulated amendments into the body; it replaces the document and clears them.
 
+## Orientation — phase order, and how hypotheses and coverage relate
+
+The setup phases below run **once, in this order**, and are re-touched only when
+*new* evidence arrives (a new crawl, a provisioned session) — they are not redone
+every wave:
+
+> recon → threat model → **form ranked hypotheses + plan family coverage (one
+> step, two views)** → provision accounts → trust-boundary map → hunting waves →
+> chain findings → reconcile coverage → finish.
+
+**Hypotheses and the coverage matrix are not competing — they are two views of one
+worklist.** "Form Hypotheses" is the *ordering* layer (which bets to hit first,
+from the fingerprint); `plan_coverage`/the coverage matrix is the *completeness*
+layer (so no family is silently skipped). They converge on the **same** hypothesis
+store: `create_hypothesis`, `plan_coverage`'s auto-seeded sqli/xss bets, and
+`next_coverage_task`'s per-family bets all dedupe by a deterministic id, so filing
+the same bet twice is a no-op — never treat them as three separate backlogs to
+drain. Do the ranked hypotheses first for momentum; let the matrix guarantee the
+long tail is assessed, not dropped. Hypothesis-first narrows *where you look
+first*, never *what you're accountable to cover*.
+
 ## Form Hypotheses Before Hunting
 
 Hunting is **hypothesis-first, not tool-first.** Running every scanner against

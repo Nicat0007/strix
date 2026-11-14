@@ -231,6 +231,12 @@ Handlebars itself is harder (default helpers are restricted), but custom helpers
 > An arithmetic hit is `needs_validation`, never confirmed — escalate safely to
 > the engine's RCE gadget (below) to prove impact. The attempt is recorded on the
 > worklist automatically.
+>
+> **Which executor:** use `run_ssti_test` when the input is **reflected** (you can
+> see evaluation/reflection in the response). When the sink is server-side with
+> **no reflected output** (a backend renderer, an email/PDF/report template, an
+> async job), it may be **blind** SSTI — use `run_oob_test` (`ssti` category) with
+> a template payload that forces an out-of-band callback instead.
 
 1. **Find templated input** — anywhere a server clearly templated user input (preview panes, email previews, dynamic dashboards, custom fields)
 2. **Fingerprint the engine** — run the differential probe table; confirm with a second probe

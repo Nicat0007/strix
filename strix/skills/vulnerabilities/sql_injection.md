@@ -154,6 +154,12 @@ Leave blocked/`needs_validation` hypotheses visible in the worklist as follow-up
 
 ## Testing Methodology
 
+> **Which executor:** use `run_sqli_test` (detection-only sqlmap) for in-band and
+> time-based SQLi — the default. When the only viable oracle is **out-of-band**
+> (no error/boolean/timing signal, but the DB can be made to resolve DNS / fetch a
+> URL — e.g. `xp_dirtree`, `UTL_HTTP`, `LOAD_FILE('\\\\host\\x')`), use
+> `run_oob_test` (`sql_injection` category) to confirm the egress callback instead.
+
 1. **Identify query shape** - SELECT/INSERT/UPDATE/DELETE, presence of WHERE/ORDER/GROUP/LIMIT/OFFSET
 2. **Determine input influence** - User input in identifiers vs values
 3. **Confirm injection class** - Reflective errors, boolean diffs, timing, or out-of-band callbacks
