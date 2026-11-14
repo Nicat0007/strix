@@ -120,6 +120,19 @@ before/after comparison per field.
 
 ## Testing Methodology
 
+> **Preferred path — `run_mass_assignment_test`.** For a `mass_assignment`
+> hypothesis with a captured create/update request (JSON-object or form body),
+> call `run_mass_assignment_test(hypothesis_id=..., request_ref=...,
+> read_request_ref=<optional GET that returns the object>)`. It injects a bounded
+> set of privileged fields — token-tagged strings (role/status/owner_id/...) plus
+> booleans (is_admin/verified/...) — replays once, and checks whether the server
+> **bound** any, in the write response and (if given) a re-read. A token-bearing
+> bound field is `needs_validation` (binding ≠ escalation — prove the field
+> actually changes authz/price/state), never confirmed; the boolean fields are
+> sent but must be confirmed **behaviourally** (a reflected `true` is weak). No
+> binding is `testing`, never `ruled_out`. Pass `extra_fields` for app-specific
+> privileged names. The attempt is recorded on the worklist automatically.
+
 1. **Identify endpoints** - Create/update endpoints and GraphQL mutations
 2. **Capture responses** - Observe returned fields to build candidate list
 3. **Build sensitive-field dictionary** - Per resource: role, isAdmin, ownerId, status, plan, limits, flags

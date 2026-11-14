@@ -71,6 +71,7 @@ from strix.tools.hypotheses.tools import (
     update_hypothesis,
 )
 from strix.tools.load_skill.tool import load_skill
+from strix.tools.mass_assignment_executor.tools import run_mass_assignment_test
 from strix.tools.mcp import call_mcp, describe_mcp, list_mcps
 from strix.tools.negative_knowledge.tools import (
     query_negative_knowledge,
@@ -669,6 +670,7 @@ _BASE_TOOLS: tuple[Tool, ...] = (
     run_ssti_test,
     run_rate_limit_test,
     run_race_test,
+    run_mass_assignment_test,
     ingest_session,
     plan_coverage,
     assess_coverage,

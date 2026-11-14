@@ -135,7 +135,7 @@ FAMILY_MAP: dict[str, dict[str, Any]] = {
              "prereqs": ["a param the server fetches"]},
     "deserialization": {"skill": "insecure_deserialization", "capability": "agent_tools",
                         "prereqs": ["a serialized blob accepted from the client"]},
-    "mass_assignment": {"skill": "mass_assignment", "capability": "agent_tools",
+    "mass_assignment": {"skill": "mass_assignment", "capability": "executor",
                         "prereqs": ["an object-create/update binding client fields"]},
     "parameter_pollution": {"skill": "underserved_families", "capability": "agent_tools",
                             "prereqs": ["duplicate-parameter handling to probe"]},
@@ -183,6 +183,7 @@ FAMILY_MAP: dict[str, dict[str, Any]] = {
 # agent_tools as their primary capability (the executor is one of several steps).
 _EXECUTOR_FAMILIES = {
     "sqli", "xss", "idor_bola", "bfla", "ssti", "open_redirect", "rate_limit", "race_condition",
+    "mass_assignment",
 }
 # Above this many distinct origins, seeding all 40 families on every origin is an
 # O(origins*40) grid the agent then works cell-by-cell — the matrix's biggest
