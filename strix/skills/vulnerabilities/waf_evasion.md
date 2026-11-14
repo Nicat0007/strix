@@ -99,3 +99,31 @@ different toolkit applies — a `403` on `/admin` is a lead, not a dead end:
 - The dedicated executors already follow this discipline: a blocked baseline is
   classified and a bounded continuation is recommended, never read as a negative
   (see `sqli_executor`/`run_sqli_test`).
+
+## Wiring every executor to this ladder
+
+The deterministic executors (`run_sqli_test`, `run_xss_test`, `run_oob_test`,
+`run_open_redirect_test`, `run_ssti_test`, `run_mass_assignment_test`,
+`run_graphql_test`, `run_cache_poisoning_test`, `run_rate_limit_test`,
+`run_race_test`, `run_authorization_test`) all return a structured result with a
+`result_status` and an HTTP/response status. **Treat a `403`/`406`/`429`/
+challenge in that result as a block to work, not a clean negative** — the same
+rule as a manual block:
+
+1. When an executor comes back `testing`/`blocked` **and** the probe response was
+   a `403`/`406`/`429`/challenge (not a genuine 200-but-not-vulnerable), do **not**
+   record the family `ruled_out`. Run a benign-vs-payload control (above) to
+   confirm it's the payload being scored.
+2. Find the tripping token and a working request-shape transform with the ladder
+   (encoding, syntax variant, request-shape, header/edge bypass) using the proxy
+   by hand.
+3. **Re-run the same executor through the bypass**: `run_sqli_test` takes
+   `continuation="tamper:<name>"`; for the others, feed the transformed request
+   (capture the bypass request in the proxy and pass its new `request_ref`, or an
+   encoded `payload_template` where the tool accepts one) so the deterministic
+   check runs against the shape the WAF lets through.
+4. Only after the ladder fails against a reachable endpoint is the cell
+   `blocked` (with the rung reached), never `ruled_out`.
+
+This keeps the executors' speed while ensuring a WAF can't turn a real bug into a
+false "not vulnerable" — the highest-recall failure this skill exists to prevent.

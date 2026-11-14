@@ -58,6 +58,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import os
 import re
 import uuid
 from typing import Any, Protocol
@@ -571,9 +572,16 @@ async def _run_oob_impl(
                         "confirm the target (host/port/path) is authorized with the operator",
                         RESOLVED, {"in_scope": False})
 
-    # 3) ALLOCATE a unique canary (OAST). Scope is already enforced above.
+    # 3) ALLOCATE a unique canary (OAST). Scope is already enforced above. The
+    # default provider uses a self-hosted interactsh server when the operator has
+    # configured one (STRIX_INTERACTSH_SERVER [+ _TOKEN]) — more reliable and
+    # WAF-resistant than the public servers — else interactsh-client's default.
     token = f"oob{uuid.uuid4().hex[:16]}"
-    provider: OastProvider = oast or _InteractshProvider(transport)
+    provider: OastProvider = oast or _InteractshProvider(
+        transport,
+        server=os.environ.get("STRIX_INTERACTSH_SERVER", ""),
+        token=os.environ.get("STRIX_INTERACTSH_TOKEN", ""),
+    )
     try:
         alloc = await provider.allocate()
     except Exception:  # noqa: BLE001

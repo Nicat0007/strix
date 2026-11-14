@@ -40,6 +40,7 @@ from strix.tools.oob_executor.tools import (
     VERDICT_NO_CALLBACK,
     _build_payload,
     _inject_value,
+    _InteractshProvider,
     _parse_interactions,
     _parse_scope,
     _run_oob_impl,
@@ -330,3 +331,32 @@ def test_body_raw_xxe_injection_runs() -> None:
     assert res["result_status"] == STATUS_NEEDS_VALIDATION
     # the XXE default template (a SYSTEM-entity document) was sent as the raw body
     assert "DOCTYPE" in send.calls[0]["mutated_raw"] and "SYSTEM" in send.calls[0]["mutated_raw"]
+
+
+def test_interactsh_provider_accepts_self_hosted_server_and_token() -> None:
+    p = _InteractshProvider(object(), server="https://oast.mine", token="tok")
+    assert p._server == "https://oast.mine" and p._token == "tok"
+
+
+def test_default_provider_reads_interactsh_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, str] = {}
+
+    class _Spy:
+        def __init__(self, transport: Any, *, server: str = "", token: str = "") -> None:
+            captured["server"] = server
+            captured["token"] = token
+
+        async def allocate(self) -> dict[str, Any] | None:
+            return None
+
+        async def teardown(self) -> None:
+            return None
+
+    monkeypatch.setenv("STRIX_INTERACTSH_SERVER", "https://oast.mine")
+    monkeypatch.setenv("STRIX_INTERACTSH_TOKEN", "sekret")
+    monkeypatch.setattr("strix.tools.oob_executor.tools._InteractshProvider", _Spy)
+    hid = _oob_hypothesis()
+    # no oast injected -> the default provider is built, reading the env above
+    res = asyncio.run(_run(hid, retrieve=_retrieve(), send=_sender(), oast=None))
+    assert captured["server"] == "https://oast.mine" and captured["token"] == "sekret"
+    assert res["result_status"] == STATUS_BLOCKED      # spy allocate() returns None -> blocked

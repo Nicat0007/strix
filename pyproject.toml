@@ -259,7 +259,7 @@ ignore = [
 # Injected http/browser provider fakes ignore some args; _embed branches by context.
 "tests/test_xss_executor.py" = ["ARG001", "PLR0911"]
 # Injected retrieve/send provider fakes ignore some args by design.
-"tests/test_oob_executor.py" = ["ARG001", "ARG002"]
+"tests/test_oob_executor.py" = ["ARG001", "ARG002", "S105", "S106"]
 # Injected retrieve/send provider fakes ignore some args by design.
 "tests/test_open_redirect_executor.py" = ["ARG001", "ARG002"]
 # Injected retrieve/send provider fakes ignore some args by design.
