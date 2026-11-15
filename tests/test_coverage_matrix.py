@@ -182,9 +182,16 @@ def test_auto_hypothesis_only_for_probe_trigger_families() -> None:
     # sqli/xss get a linked bet (a parameter is a sufficient probe trigger)...
     assert query_impl(surface_type="route", family="sqli")["cells"][0]["hypothesis_refs"]
     assert query_impl(surface_type="route", family="xss")["cells"][0]["hypothesis_refs"]
-    # ...command_injection/ssti do NOT (same param, but no confirmed backend/bet).
-    assert not query_impl(surface_type="route",
-                          family="command_injection")["cells"][0]["hypothesis_refs"]
+    # nosqli is seeded as a route cell (param probe trigger) but NOT auto-bet.
+    nosqli = query_impl(surface_type="route", family="nosqli")["cells"]
+    assert nosqli and not nosqli[0]["hypothesis_refs"]
+    # command_injection/ssti/parameter_pollution are NO LONGER fanned out per
+    # route (they need a specific sink / are cross-cutting) — a bare GET param
+    # does not seed a route cell for them; they stay assessed at the origin level.
+    assert query_impl(surface_type="route", family="command_injection")["total"] == 0
+    assert query_impl(surface_type="route", family="ssti")["total"] == 0
+    # ...but the origin-level cell still guarantees the family is assessed.
+    assert query_impl(surface_type="origin", family="command_injection")["total"] == 1
 
 
 def test_origin_unknown_families_carry_assessment_work() -> None:

@@ -410,10 +410,16 @@ def _route_signals(ep: dict[str, Any]) -> dict[str, str]:
     actors = ep.get("actors_observed", []) or []
     joined = path + " " + " ".join(pnames)
     if params:
-        # Parameter presence is a sufficient trigger to PROBE input injection even
-        # when the backend is unknown — do not suppress exploratory testing.
-        for fam in ("sqli", "nosqli", "xss", "command_injection", "ssti",
-                    "parameter_pollution", "mass_assignment"):
+        # A bare parameter is a sufficient probe trigger for the input-injection
+        # classes where "a param exists" IS the signal (sqli/nosqli/xss). The
+        # others that used to fan out per route — command_injection/ssti (need a
+        # specific OS/template sink), parameter_pollution (duplicate-param
+        # handling), mass_assignment (request bodies — seeded under state-changing
+        # below) — are NOT fanned out per route: that produced a large noise grid
+        # of `unknown` route cells (the 640-cell explosion). They stay assessed at
+        # the ORIGIN level (completeness preserved — every family still has an
+        # origin cell) and get a route cell on demand when actually worked.
+        for fam in ("sqli", "nosqli", "xss"):
             out[fam] = (f"signal: parameter(s) {pnames or '[body]'} reach a handler "
                         "(backend unknown; probe, do not assume a specific sink)")
     if any(h in n for n in pnames for h in _ID_HINTS) or ep.get("resource_count"):
@@ -431,6 +437,8 @@ def _route_signals(ep: dict[str, Any]) -> dict[str, str]:
                        "assess the session mechanism (cookie vs token) and anti-CSRF token")
         out["race_condition"] = (f"signal: state-changing {method}; assess whether a limited/"
                                  "idempotent-sensitive operation exists")
+        out["mass_assignment"] = (f"signal: state-changing {method} with a body — assess whether "
+                                  "it binds client-controlled privileged fields (create/update)")
     if any(h in joined for h in _FILE_HINTS):
         out["upload"] = ("signal: file/path-shaped route/param — NOT proof of an upload handler; "
                          "assess whether a real upload/store exists")
