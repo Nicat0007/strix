@@ -366,6 +366,9 @@ A secret is only reported once verified live or clearly valid (per `analysis/cou
 - Fuzz hosts that show a CMS/framework fingerprint or thin crawl output: `ffuf -w wordlist.txt -u https://host.tld/FUZZ -mc 200,204,301,302,307,401,403 -ac -t 20 -rate 50 -noninteractive -of json -o ffuf_host.json` (see `tooling/ffuf.md`).
 - `dirsearch -u https://host.tld -e php,html,js,json` for a fast broad sweep when no specific wordlist angle exists yet.
 - Calibrate wordlist and depth to what the host actually is (fingerprinted tech, paths already found) — one huge generic wordlist against every host in a large inventory burns budget and buries real hits in noise.
+- **Fat-404 / SPA catch-all guard (cost + false-negative).** A single-page app often returns a **large** body (a full SSR/HTML shell) for *every* unknown path with a `200`/`404` — e.g. a 327 KB Nuxt page on courts.gov.az. Blind path-probing then (a) downloads hundreds of KB per miss (a 1,000-path admin sweep = hundreds of MB + tokens for nothing) and (b) makes `-mc`/status-based matching useless because misses don't 404. Before any dictionary sweep, fetch 2–3 deliberately-bogus paths and measure the baseline-miss size/status; if the miss is large or always-200:
+  - probe with **`HEAD`** or `curl -s -o /dev/null -w "%{http_code} %{size_download}"` (status + size only, no body transfer), and flag a hit by a **size/shape delta** from the bogus-path baseline, not by status alone (`ffuf -mc all -fs <baseline-size>` / `-ac` auto-calibration bounds this);
+  - **hard-cap** the admin/CMS dictionary (a few dozen high-signal paths, not a 1,000-word list) — on an SPA the real admin surface is in the JS bundle's route table, not a wordlist, so read the bundle first and probe the bundle's actual admin routes rather than brute-forcing.
 
 ### 4. Parameter Discovery
 

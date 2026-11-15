@@ -57,6 +57,10 @@ Every scan needs one shared answer to "who is the attacker here, and what are th
 
 **Black-box, the ordering inverts.** You cannot model a target you have not seen, so recon comes first: spawn reconnaissance, and write the model from what it found — the hosts and ports that answered, the technology fingerprints, the authentication and session model, the roles and tenants you can distinguish, the endpoints and parameters enumerated. Then spawn the hunters against that model. Do not stall the scan waiting for a perfect picture and do not skip the step because the picture is partial: mark what is inferred rather than observed and let it be corrected. A black-box model that says "admin panel at `/admin` appears to be IP-restricted — unverified" is worth far more than no model, because it tells the next agent exactly what to go check.
 
+**Spawn recon ONCE, and keep Phase-1 recon to mapping only.** Two discipline points on the recon spawn:
+- **One recon agent, not two.** Before spawning a role (recon, a given slice), glance at `view_agent_graph` — if that role is already running or done, do not spawn a duplicate. Composing the mandate twice and firing it twice is pure duplicated cost (a full re-crawl) for one inventory.
+- **Phase-1 recon maps, it does not exploit.** The recon mandate must say so explicitly: enumerate/fingerprint/crawl and *read* the JS contract, but do **not** forge auth tokens, send exploit/injection payloads, download protected objects, or retrieve citizen data — that is the hunting wave's job, under the counterevidence/PII discipline, with the proof bar. A recon agent that quietly exploits a gate it found (e.g. forging a download hash and pulling a real document) has jumped the gun on the proof/ethics gate and muddies who-tested-what; let it record the *mechanism* as a lead in a note and hand it to a hunter, not exercise it. (A recon agent *may* send the one benign probe needed to classify a surface — a 200/404/shape check — but not a working exploit.)
+
 Either way you write it with the least information anyone on this scan will ever have, so expect it to be wrong somewhere. Subagents correct it with `amend_threat_model`, which appends an attributed addendum instead of overwriting — expect many of these on a black-box run, as authenticating, pivoting between roles, and reaching internal surfaces is exactly what turns inference into fact. Read the amendments back before you write the final report: an agent telling you a boundary you called trusted is attacker-reachable is a finding about your model, not a note. Only call `save_threat_model` again to fold accumulated amendments into the body; it replaces the document and clears them.
 
 ## Orientation — phase order, and how hypotheses and coverage relate
@@ -551,6 +555,21 @@ agent legitimately deep in one careful multi-step verification can look
 "stagnant" by this count and be doing exactly the right thing. Weigh it
 against what you already know the agent is working on before deciding
 whether a nudge is useful or just noise.
+
+**Winding down an agent that won't stop.** An agent that keeps probing
+*after* it has already reported its findings, or that circles for many
+tool calls after a nudge with no new coverage, is burning budget for
+nothing (a real case: an admin-surface agent ran ~1,000 probes and kept
+going after reporting completion, needing three nudges). When that
+happens, escalate the nudge into a **clear, bounded close-out**: tell it
+plainly its results are being taken as final, name the 2–3 specific
+answers you still need from it, instruct it to record coverage for what
+it assessed (honest `blocked`/`needs_follow_up` where it couldn't close)
+and call `agent_finish`, and tell it **not to start new sweeps**. Do not
+leave it circling indefinitely waiting for a perfect answer — a bounded
+agent that reports what it has beats an unbounded one that never closes.
+Reserve `stop_agent` for an agent that ignores the close-out and would
+otherwise block the whole scan from finishing.
 
 **Hierarchical Delegation**
 
