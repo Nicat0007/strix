@@ -356,6 +356,45 @@ scanner hits and the logic-bearing-function candidates; re-deriving it per
 agent is the same wasted spend as re-crawling a target recon already
 mapped.
 
+## Maintain a Running Attack Graph (depth, not just breadth)
+
+Chaining at the end only works if the pieces were found and connected along the way.
+Keep a living model of the target in `/workspace/recon/attack_graph.md`, updated as recon
+and each wave reports — not invented at the end. This is what turns scattered
+low-severity findings into the high/critical chain that actually moves you up a
+leaderboard, and it is the direct counter to the duplicate problem: dupes come from
+testing the same shallow surface everyone tests; depth comes from reachability no one
+else mapped.
+
+**Model the target as nodes and edges.**
+- **Nodes:** every origin (including odd-port ones from `reconnaissance/service_enumeration.md`
+  — treat `host:8443` as a first-class node, not a footnote), each service, each actor/role
+  (from `account_provisioning.md`/`trust_boundary_mapping.md`), each token/session, each
+  object identifier class (user_id, case_id, FIN, order_id), each secret, and each internal
+  host/port reachable only indirectly (via SSRF, a proxy, an odd-port admin).
+- **Edges = "what reaching this node unlocks."** Every finding and every open lead is an
+  edge: an info leak → an identifier node; an SSRF → an internal-port node; an odd-port
+  staging build → a credential node; a leaked JS secret → an API node; an auth bypass →
+  an identity node. Write the edge down the moment a wave reports it.
+
+**Reason over the graph continuously:**
+1. **Pick the highest-value reachable node and hunt toward it.** A finding that merely
+   unlocks another node (an identity assertion, a leaked id, an internal port) is not a
+   dead end — it is an edge; enumerate what it reaches and spawn a hunter for that node.
+2. **Named reachability pivots to look for actively** (beyond the end-pass chain list):
+   odd-port admin/staging → default/reused creds → the prod app; a credential found on
+   one origin → **credential reuse** on every other origin and service node; SSRF →
+   cloud metadata / an internal-only port in `host_ports.json`; subdomain takeover →
+   cookie/OAuth `redirect_uri` on the parent; a UAT/test endpoint (`GenerateFakeToken`-
+   class) → a prod identity; one tenant's object id → cross-tenant read (`idor.md`).
+3. **Depth-first on the under-contested nodes.** Prioritize odd-port services, authenticated
+   multi-account logic, cross-tenant boundaries, and multi-hop chains over the shallow
+   single-request surface (reflected XSS on the main page, missing headers, clickjacking)
+   that is both dup-bait and, on most programs, explicitly excluded. Spend LLM budget
+   where first-to-report lives, per `analysis/candidate_triage.md`'s rubric.
+
+The graph is the root agent's working memory; the pass below is where you harvest it.
+
 ## Chain Findings Before Finishing
 
 Once the vulnerability-hunting waves have reported, don't move straight to compiling the report. Individually low/medium findings and open leads routinely combine into something a program pays out at high/critical — a single bug is rarely the whole story, the chain is. Do this pass explicitly, as its own step, not as an afterthought while writing the summary:

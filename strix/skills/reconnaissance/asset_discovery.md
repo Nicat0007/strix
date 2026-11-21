@@ -72,6 +72,39 @@ Before starting a layer, check the prior stage: `strix-recon-state get "$RUN_ID"
 
 A `skipped` optional stage satisfies the ordering check and never deadlocks a later stage; `failed`/`partial`/`pending` do not — redo or explicitly skip. The real artifacts other agents consume are `subs.jsonl` / `assets.jsonl` / `host_ports.json` / `attack_queue.md` / `nuclei.jsonl`, per the reuse convention in `coordination/root_agent.md`.
 
+### Layer 2.5 — Service & Port Fan-Out (MANDATORY; where non-duplicate bugs live)
+
+`naabu` fills `host_ports.json` with open ports, but the standard `httpx` probe only
+hit the seed origins on 80/443. **Every open port is a candidate for its own distinct
+service** — and a different service on `:8080`/`:8443`/`:8000`/`:9000`/`:3000`/`:5601`/
+`:9200`/`:8081`/`:7001`/`:8888` is the single highest-yield, lowest-competition
+surface in black-box: most hunters only test the main site on 443, so odd-port
+findings are rarely duplicates. Do NOT skip this because the main site looked boring.
+
+For every `host:port` in `host_ports.json` that is not already an origin in
+`assets.jsonl`:
+1. **Re-probe as BOTH schemes:** `httpx -u host:port` for `http://host:port` AND
+   `https://host:port` (a service on 8443 is usually TLS, 8080 usually plain; try
+   both). `echo "host:port" | httpx -td -tls-grab -sc -title -server -json`.
+2. **A responder is a NEW origin** → append it to `assets.jsonl` (its own
+   `scheme://host:port` identity) and `record_endpoint` it into the attack-surface
+   inventory. It then runs the FULL brain exactly like any origin: classify, crawl
+   (Application-Layer Recon), Layer 3/4, hypotheses, executors. A staging/admin/dev
+   instance on an odd port frequently runs an OLDER or DEBUG build of the same app →
+   bugs already patched on 443 are still live here (and not a dup of the main site).
+3. **Non-HTTP / recognized service** → `nmap -sV -p <port> host` to fingerprint, then
+   hand it to `reconnaissance/service_enumeration.md` (Redis/Mongo/Elastic/memcached/
+   DB/Jenkins/Grafana/phpMyAdmin/Docker/K8s/RabbitMQ/dev-server playbooks). Many of
+   these are unauthenticated-by-default data stores or admin panels — a direct,
+   high-severity, rarely-duplicated finding.
+4. **Record coverage per port-origin** so a later agent doesn't re-sweep it, and so the
+   final report shows the odd ports were actually tested, not just discovered.
+
+Load `reconnaissance/service_enumeration.md` the moment `host_ports.json` shows any
+non-80/443 port. This step is agent-honored like the others, but treat it as
+non-optional: skipping it is how the highest-value, least-contested surface goes
+untested and your findings stay stuck in the duplicate pile.
+
 ## Attack Surface
 
 - Hosts discoverable via issued certificates (CT logs) but absent from DNS brute force
