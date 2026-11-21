@@ -21,6 +21,35 @@ full web brain (`asset_discovery.md` application-layer recon + the executors). *
 non-HTTP service** → the per-service playbook below. **Unknown** → `nmap` banner +
 `nc`/`openssl s_client` manual banner grab, then classify.
 
+## Step 2 — version → CVE correlation (per IP, per port)
+Every service `nmap -sV` identifies with a product+version is a CVE lookup. This is how
+an open port becomes a concrete, high-severity finding ("Jenkins 2.401 on :8080 →
+CVE-2024-23897 arbitrary file read") instead of a vague "port open" note.
+- **Primary (offline, no API key — always available):** nuclei's CVE template set ships
+  in the image (`nuclei -update-templates` ran at build). Run the product's templates
+  against the exact origin: `nuclei -u <scheme>://host:port -tags <product> -severity
+  critical,high,medium -json -o nuclei_svc.jsonl` (e.g. `-tags jenkins`, `-tags grafana`,
+  `-tags gitlab`, `-tags jira`, `-tags confluence`, `-tags vmware`, `-tags fortinet`).
+  nuclei organizes `http/cves/` **by year, not product**, so always select by `-tags
+  <product>`, never a `http/cves/<product>/` path (that path does not exist). Keep it
+  narrow (the specific product tag + the one origin), never a full 10k-template sweep —
+  especially on a program that bans broad scanners.
+- **nmap scripts:** `nmap -sV --script "vuln and safe" -p <port> <host>` runs offline
+  vuln NSE checks (e.g. `http-vuln-*`, service-specific). Version-based `vulners`/online
+  scripts need internet and are noisier — prefer the offline `vuln` category.
+- **Client-side libraries:** `retire.js` over crawled JS already flags CVE-bearing JS
+  libs (see `asset_discovery.md`) — the browser-side half of the same job.
+- **Optional, richer intel (needs setup):** `vulnx` (cvemap) queries ProjectDiscovery's
+  vulnerability API and **requires an API key** (`vulnx auth`) + internet — it is NOT an
+  offline DB. If the operator configured a key: `vulnx search -q '<product> <version>'
+  -j` or `vulnx id <CVE> -j` enriches a hit with CVSS/EPKS/exploit-maturity. Treat its
+  absence as a no-op, never a blocker — nuclei above is the reliable path.
+- **Discipline:** a matched CVE template is a **lead**, not a confirmed finding — nuclei
+  version-match templates can false-positive on back-ported/patched builds. Confirm the
+  vulnerable behavior per `analysis/counterevidence.md` (reproduce the actual effect, or
+  state the version-evidence gap in `confidence_rationale`) before filing. Record the
+  product+version and matched CVE id(s) against the origin in the attack-surface inventory.
+
 ## Alternate app instances on odd HTTP ports (do this first — biggest win)
 A different port on the same host is often a **different or older build** of the app:
 staging, UAT, admin console, a debug server, an internal API exposed by mistake.
