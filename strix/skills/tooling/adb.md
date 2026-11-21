@@ -27,7 +27,16 @@ taskkill /F /IM adb.exe
 <path>\adb.exe connect 192.168.56.111:5555     # the IP from `adb devices`
 <path>\adb.exe devices                          # must now list that device
 ```
-Allow inbound TCP 5037 if Windows Firewall prompts. Keep the server using the
+**If port 5037 is permanently contested** (a local adb server keeps respawning on
+`127.0.0.1:5037` — Android Studio / Genymotion / Docker Desktop — so `-a` can never
+bind it), do NOT fight it: run the exposed server on a FREE port and point the
+container there. Host: `adb -a -P 5038 nodaemon server` (keep open), then
+`adb -P 5038 connect <genymotion-ip>:5555` and `adb -P 5038 devices` in a second
+terminal. Launch Strix with the host env `STRIX_ADB_SERVER=tcp:host.docker.internal:5038`
+— `docker_client` injects it as the container's `ADB_SERVER_SOCKET`, overriding the
+5037 default. Then in the container just `adb devices`.
+
+Allow inbound TCP 5037 (or 5038) if Windows Firewall prompts. Keep the server using the
 SAME adb binary Genymotion uses (Genymotion → Settings → ADB → custom SDK tools
 pointed at the platform-tools folder) so client/server versions match — a version
 mismatch to the container's adb shows as "adb server version doesn't match".

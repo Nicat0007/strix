@@ -166,7 +166,7 @@ class StrixDockerSandboxClient(DockerSandboxClient):
     # backend before ``create()``. Each item is ``{source, target, read_only}``.
     strix_bind_mounts: list[dict[str, Any]] | None = None
 
-    async def _create_container(
+    async def _create_container(  # noqa: PLR0912
         self,
         image: str,
         *,
@@ -184,6 +184,14 @@ class StrixDockerSandboxClient(DockerSandboxClient):
         environment: dict[str, str] | None = None
         if manifest:
             environment = await manifest.environment.resolve()
+        # Operator override for the mobile ADB bridge: if STRIX_ADB_SERVER is set
+        # on the host (e.g. tcp:host.docker.internal:5038 when 5037 is contested by
+        # a respawning local adb/Genymotion), inject it as the container's
+        # ADB_SERVER_SOCKET so the in-sandbox adb client talks to the host adb
+        # server on that port. Unset -> the image default (…:5037) stands.
+        _adb_server = os.environ.get("STRIX_ADB_SERVER", "").strip()
+        if _adb_server:
+            environment = {**(environment or {}), "ADB_SERVER_SOCKET": _adb_server}
         # Strix delta from the SDK body: drop ``entrypoint`` override and
         # supply ``tail -f /dev/null`` as ``command`` so the image's
         # ENTRYPOINT (``docker-entrypoint.sh``) runs setup, then ``exec
