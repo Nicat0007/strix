@@ -28,6 +28,7 @@ is not evidence that no relevant skill exists.
 | Detect | Load | Documented in |
 |---|---|---|
 | `Plugin Name:`/`Theme Name:` header, WP-style `readme.txt`, a `wp-content/plugins\|themes/` path, or heavy `add_action`/`add_filter`/`$wpdb`/`register_rest_route` usage | `wordpress` | "Resolution and Namespace Risks" below |
+| An `AndroidManifest.xml`, a `*-decompiled/{apk,java}` tree under `/workspace/mobile-apps/`, `.smali` files, or Retrofit/OkHttp/`addJavascriptInterface` usage (a decompiled APK) | `android` | `frameworks/android.md` |
 | A bare `npx`/`npm exec` command that could fall back from a missing local package to a public registry name | `npx_confusion` | "Resolution and Namespace Risks" below |
 | Abandoned domains, provider resources, package namespaces, update URLs, mail identities, telemetry, or control endpoints in source, images, firmware, or history | `infrastructure_lifecycle` | "Resolution and Namespace Risks" below |
 | Model-provider SDKs, prompt templates, retrieval/vector stores, tool/function calling, model loading, training/feedback pipelines, or token/agent-loop accounting | `llm_applications` | "Converting Static Signals Into Exploits" below |
@@ -56,7 +57,7 @@ or from these — becomes a report.
 ART=/workspace/.source-aware
 mkdir -p "$ART"
 
-semgrep scan --config p/default --config p/golang --config p/secrets \
+semgrep scan --config p/default --config p/golang --config p/java --config p/secrets \
   --config /home/pentester/tools/semgrep-rules \
   --metrics=off --json --output "$ART/semgrep.json" .
 # Build deterministic AST targets from semgrep scope (no hardcoded path guessing)
@@ -521,7 +522,7 @@ Use Semgrep as the default static triage pass:
 
 ```bash
 # Preferred deterministic profile set (works with --metrics=off)
-semgrep scan --config p/default --config p/golang --config p/secrets \
+semgrep scan --config p/default --config p/golang --config p/java --config p/secrets \
   --config /home/pentester/tools/semgrep-rules \
   --metrics=off --json --output /workspace/.source-aware/semgrep.json .
 

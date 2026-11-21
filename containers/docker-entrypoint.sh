@@ -125,6 +125,28 @@ echo "✅ CA added to browser trust store"
 
 mkdir -p /workspace/.agent-browser-screenshots
 
+# --- Static-APK decompilation (mobile Phase 1) ---------------------------------
+# For each staged .apk under /workspace/mobile-apps/, produce a decompiled tree at
+# <name>-decompiled/{apk,java} so the source-aware skill set reads it as white-box
+# source. Each step is guarded + timeout-bounded so a corrupt/hostile APK warns
+# and continues rather than aborting container start (set -e is on). A near-instant
+# no-op when no .apk is present (this runs on every scan type).
+if compgen -G "/workspace/mobile-apps/*.apk" > /dev/null 2>&1; then
+  for _apk in /workspace/mobile-apps/*.apk; do
+    _base="${_apk%.apk}-decompiled"
+    echo "Decompiling $(basename "$_apk") -> $(basename "$_base")/ ..."
+    mkdir -p "$_base"
+    # apktool: decoded AndroidManifest.xml, res/, smali, network_security_config.xml
+    timeout 600 apktool d -f -o "$_base/apk" "$_apk" \
+      || echo "WARNING: apktool failed on $(basename "$_apk") (continuing)"
+    # jadx: best-effort Java (can legitimately fail/partial on obfuscated/malformed DEX)
+    timeout 900 jadx -d "$_base/java" "$_apk" \
+      || echo "WARNING: jadx failed/partial on $(basename "$_apk") (continuing)"
+  done
+  echo "✅ APK decompilation complete"
+fi
+# ------------------------------------------------------------------------------
+
 echo "✅ Container ready"
 
 cd /workspace

@@ -55,6 +55,7 @@ RUN apt-get update && \
     iproute2 iputils-ping netcat-traditional \
     nmap ncat ndiff \
     sqlmap nuclei subfinder naabu ffuf \
+    apktool jadx dex2jar adb \
     nodejs npm pipx \
     golang-go \
     libcap2-bin \
@@ -100,7 +101,9 @@ RUN nuclei -update-templates
 RUN pipx install arjun && \
     pipx install dirsearch && \
     pipx inject dirsearch 'setuptools<81' && \
-    pipx install wafw00f
+    pipx install wafw00f && \
+    pipx install frida-tools && \
+    pipx install androguard
 
 ENV NPM_CONFIG_PREFIX=/home/pentester/.npm-global
 RUN mkdir -p /home/pentester/.npm-global

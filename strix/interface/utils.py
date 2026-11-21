@@ -1186,6 +1186,14 @@ def infer_target_type(target: str) -> tuple[str, dict[str, str]]:  # noqa: PLR09
             if path.is_dir():
                 check_mountable_dir(path)
                 return "local_code", {"target_path": str(path.resolve())}
+            if path.suffix.lower() == ".apk":
+                # Ordered before the spec probe so an .apk is never mis-read as a
+                # (malformed) API spec. Decompilation happens in the sandbox at
+                # container start, not here — this host side only classifies + stages.
+                return "mobile_app", {
+                    "target_apk": str(path.resolve()),
+                    "mobile_platform": "android",
+                }
             spec_format = detect_spec_format(path)
             if spec_format is not None:
                 return "api_spec", {
@@ -1546,6 +1554,49 @@ def stage_api_specs(targets_info: list[dict[str, Any]], run_name: str) -> list[d
         {
             "source_path": str(staging),
             "workspace_subdir": API_SPEC_WORKSPACE_SUBDIR,
+            "protect_metadata": False,
+        }
+    ]
+
+
+MOBILE_APP_WORKSPACE_SUBDIR = "mobile-apps"
+
+
+def stage_mobile_apps(targets_info: list[dict[str, Any]], run_name: str) -> list[dict[str, Any]]:
+    """Copy every ``mobile_app`` (.apk) target into one directory for the sandbox.
+
+    Mirrors ``stage_api_specs``: an APK is hostile, attacker-influenced bytecode,
+    so it is copied to a per-run staging dir exposed at ``/workspace/mobile-apps``
+    rather than mounting its host location — and it is decompiled *inside* the
+    sandbox (apktool + jadx, by ``docker-entrypoint.sh``) at container start, never
+    on the host. Each target's ``workspace_path`` records where the agent finds the
+    APK and its ``*-decompiled`` tree.
+    """
+    apps = [t for t in targets_info if t.get("type") == "mobile_app"]
+    if not apps:
+        return []
+
+    staging = Path(tempfile.gettempdir()) / "strix_mobile_apps" / run_name
+    staging.mkdir(parents=True, exist_ok=True)
+
+    used: set[str] = set()
+    for target in apps:
+        details = target["details"]
+        source = Path(str(details["target_apk"]))
+        name = source.name
+        stem, suffix = source.stem, source.suffix
+        count = 1
+        while name in used:
+            count += 1
+            name = f"{stem}-{count}{suffix}"
+        used.add(name)
+        shutil.copy2(source, staging / name)
+        details["workspace_path"] = f"/workspace/{MOBILE_APP_WORKSPACE_SUBDIR}/{name}"
+
+    return [
+        {
+            "source_path": str(staging),
+            "workspace_subdir": MOBILE_APP_WORKSPACE_SUBDIR,
             "protect_metadata": False,
         }
     ]

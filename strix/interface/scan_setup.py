@@ -29,6 +29,7 @@ from strix.interface.utils import (
     resolve_diff_scope_context,
     rewrite_localhost_targets,
     stage_api_specs,
+    stage_mobile_apps,
     write_fetched_collection,
 )
 from strix.telemetry import posthog, scarf
@@ -182,6 +183,7 @@ def prepare_run(args: argparse.Namespace) -> None:
 
     args.local_sources = collect_local_sources(args.targets_info)
     args.local_sources.extend(stage_api_specs(args.targets_info, args.run_name))
+    args.local_sources.extend(stage_mobile_apps(args.targets_info, args.run_name))
     diff_scope = resolve_diff_scope_context(
         local_sources=args.local_sources,
         scope_mode=args.scope_mode,

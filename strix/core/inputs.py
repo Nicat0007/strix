@@ -118,6 +118,7 @@ def build_root_task(scan_config: dict[str, Any]) -> str:
         "URLs": [],
         "IP Addresses": [],
         "API Specifications": [],
+        "Mobile Applications": [],
     }
 
     for target in targets:
@@ -145,6 +146,17 @@ def build_root_task(scan_config: dict[str, Any]) -> str:
             sections["IP Addresses"].append(f"- {details.get('target_ip', '')}")
         elif ttype == "api_spec":
             sections["API Specifications"].extend(_render_api_spec(details))
+        elif ttype == "mobile_app":
+            apk = details.get("target_apk", "unknown")
+            sections["Mobile Applications"].append(
+                f"- {apk} (Android APK, available decompiled under {workspace_path}: "
+                "a `*-decompiled/java` tree from jadx and a `*-decompiled/apk` tree from "
+                "apktool — AndroidManifest.xml, res/, network_security_config — produced at "
+                "container start. Treat it as WHITE-BOX source: enumerate exported "
+                "components/permissions/deep-links/WebView bridges, hunt sinks and hardcoded "
+                "secrets, and load `frameworks/android.md`. The app's backend API, once found "
+                "in the code or observed dynamically, is in scope as part of this application.)"
+            )
 
     parts: list[str] = []
     for label, items in sections.items():
@@ -193,10 +205,12 @@ def build_root_task(scan_config: dict[str, Any]) -> str:
 
 
 # Target types that put source code in the sandbox: a user-supplied local
-# directory, or a repository Strix clones itself. Both are source-aware /
-# whitebox scans — a cloned repo is source code same as a mounted directory,
-# it just came from a URL instead of a path.
-_WHITEBOX_TARGET_TYPES = frozenset({"local_code", "repository"})
+# directory, a repository Strix clones itself, or a decompiled Android APK. All
+# are source-aware / whitebox scans — a cloned repo is source code same as a
+# mounted directory (it just came from a URL), and a decompiled APK (jadx Java +
+# apktool manifest/resources, produced at container start) is source code the
+# same way, so it gets the full source-aware skill set.
+_WHITEBOX_TARGET_TYPES = frozenset({"local_code", "repository", "mobile_app"})
 
 
 def is_whitebox_targets(targets: list[dict[str, Any]] | None) -> bool:
@@ -218,6 +232,7 @@ def build_scope_context(scan_config: dict[str, Any]) -> dict[str, Any]:
         "web_application": "target_url",
         "ip_address": "target_ip",
         "api_spec": "target_spec",
+        "mobile_app": "target_apk",
     }
     for target in scan_config.get("targets", []) or []:
         ttype = target.get("type", "unknown")
