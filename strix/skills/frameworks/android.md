@@ -142,6 +142,48 @@ Apply `counterevidence.md` to Android guards specifically:
 - A permission check inside the component that runs AFTER a side effect, or only on
   one intent action, is a reachable-path gap.
 
+## Vulnerability classes — the mobile angle + which executor proves it
+Most high-severity mobile bugs are **backend bugs** reachable through the app's API:
+once the endpoints are in the attack-surface inventory (static extraction) or captured
+live (Frida unpin), they run the SAME black-box brain as any web target. Route them:
+- **Auth / authorization** — two layers:
+  - *Backend* (the big one): IDOR/BFLA on the app's API → `run_authorization_test` /
+    the hypotheses worklist, exactly like web. Mobile APIs are notoriously under-authz'd
+    because devs assume "only our app calls this." Multi-account replay applies.
+  - *Client-side*: a JWT/session token in `SharedPreferences`/SQLite that never expires
+    or isn't invalidated server-side on logout; "remember me" secrets; biometric/PIN
+    gating enforced **only** in the app (the API accepts the token without it — test by
+    replaying the captured request); hardcoded API keys used AS auth; a refresh-token
+    flow that leaks or over-scopes. OAuth via a custom scheme → see deep links below.
+- **SQL injection** — *local*: an exported ContentProvider with tainted `query()`
+  selection or `openFile()` path → prove with `content query --uri content://<auth>/x
+  --where "1=1) UNION SELECT ..."` (no root needed). *Backend*: SQLi on a captured API
+  param → `run_sqli_test` (detection-only), then the normal escalation.
+- **XSS** — *WebView*: a WebView that loads a deep-link/intent-supplied URL or renders
+  server HTML with JS enabled is an XSS sink — `javascript:` UR:scheme injection, a
+  reflected param in `loadData`/`loadUrl`, or `addJavascriptInterface` turning XSS into
+  native RCE. Prove via `am start`/deep link with a payload. *Backend*: stored/reflected
+  XSS in the API's web responses → `run_xss_test`.
+- **SSTI / other injection** — purely server-side on the captured API → `run_ssti_test`
+  / `run_oob_test` (blind), same as web. There is no mobile-specific SSTI surface; the
+  mobile value is DISCOVERING the endpoint, then the executor proves it.
+
+## Deep links & app links — attack matrix (Android-specific, no root needed)
+Every `<data scheme/host/path>` from the manifest is a remotely-triggerable entry point
+(a crafted link in a browser/another app fires it). Enumerate, then for each test:
+- **Auth/authz bypass** — a deep link that jumps straight into an authenticated screen
+  or action (`myapp://account/transfer?...`) without the app re-checking session/authz.
+- **OAuth / token theft** — the app registers `myapp://oauth/callback?token=` or
+  `code=`; a malicious app also claiming that scheme (scheme is not unique on Android)
+  intercepts the token → account takeover (cross-link `oauth.md`, `open_redirect.md`).
+- **WebView XSS / open redirect** — a deep-link param flows into a WebView `loadUrl` or
+  a `shouldOverrideUrlLoading` redirect target → XSS or redirect to attacker origin.
+- **Parameter injection into a native sink** — a deep-link value reaching a provider
+  query, a file path, an intent extra forwarded to another component (intent redirection).
+- **PoC:** `adb shell am start -a android.intent.action.VIEW -d "myapp://host/path?x=PAYLOAD"`.
+Prove the *consequence* (token captured, cross-user action, script executed), not just
+that the link opens — a deep link opening the app is not a finding.
+
 ## Testing Methodology
 1. **Decompile is done for you** — read `apk/AndroidManifest.xml` first (package,
    `versionName`, `minSdk`/`targetSdk`, every component + export + permission).
@@ -150,7 +192,12 @@ Apply `counterevidence.md` to Android guards specifically:
    each a candidate; record coverage per instance.
 4. **Trace each sink** source→sink in `java/` with `file:line` per hop (jadx line
    numbers; fall back to smali under `apk/` when jadx failed).
-5. **Secrets pass** (trufflehog/gitleaks, verified).
+5. **Secrets + SAST pass** — `trufflehog`/`gitleaks` (verified) for secrets, AND
+   `mobsfscan <decompiled>` (the lightweight MobSF static engine — semgrep-based
+   Android rules for insecure storage, weak crypto, exported components, WebView
+   misconfig, cleartext, tapjacking). Treat every `mobsfscan` hit as a LEAD that still
+   passes `counterevidence.md` — it is a high-signal starting point, not a verdict, same
+   as any scanner. Fold confirmed endpoints/sinks into the attack-surface inventory.
 6. **Dynamic confirmation on a device/emulator** — a static finding is a candidate;
    PROVE it at runtime (`am start` an exported activity with a crafted intent,
    `content query` a provider, a Frida pinning bypass to read live traffic). See

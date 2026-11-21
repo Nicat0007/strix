@@ -6,8 +6,44 @@ description: "Frida runtime instrumentation of an Android app on the connected G
 # Frida — runtime instrumentation (Android, on Genymotion)
 
 Frida proves the dynamic half of an Android assessment. Prerequisite: the ADB
-bridge is up (`tooling/adb.md`) and `adb devices` shows the emulator. `frida-tools`
-is installed in the sandbox; Genymotion is x86/rooted.
+bridge is up (`tooling/adb.md`) and `adb devices` shows the device. `frida-tools`,
+`objection`, `apksigner`, `zipalign` are installed in the sandbox.
+
+## Rooted vs non-rooted — pick the path FIRST
+Check root once: `adb shell su -c id` (rooted prints `uid=0`). It decides everything.
+- **Rooted (Genymotion, rooted emulator):** push `frida-server`, run it with `su`,
+  inject into the live app, install the proxy CA as a system cert. Full power, no app
+  modification. Use the "Start frida-server" + system-CA sections below.
+- **Non-rooted (a real phone, a non-rooted emulator):** `frida-server`+`su` and system
+  CA install are **unavailable**. Instead REPACKAGE the target APK with an embedded
+  Frida gadget and a user-CA-trusting network config, then `adb install` it — this gives
+  Frida + a proxy-trusting app WITHOUT root. See "Non-rooted path" below. Note: a
+  repackaged app is re-signed with a debug key, so server-side signature/attestation
+  (Play Integrity, SafetyNet) may reject it — that is an honest `blocked`, not a dead end
+  for the static + traffic-capture value you still get.
+These need NO root in EITHER case (do them first): APK pull (`pm path`+`adb pull`),
+`am start`/deep-link injection, `content query` on an exported provider, `adb logcat`,
+and `run-as <pkg>` for a debuggable app. Only `frida-server`+`su`, system-CA install,
+and reading OTHER apps' `/data/data` require root.
+
+## Non-rooted path — repackage with a Frida gadget (no root)
+```
+# objection does the whole inject+align+sign in one step (fastest):
+objection patchapk -s /workspace/mobile-apps/base.apk        # -> base.objection.apk
+adb install -r /workspace/mobile-apps/base.objection.apk
+adb shell monkey -p <pkg> 1                                   # launch it; it pauses for frida
+objection -g <pkg> explore                                   # connect (no root), then:
+#   android sslpinning disable        (unpin)
+#   android hooking ...               (hook crypto/keystore/bridge/intent)
+```
+If `patchapk` fails (split APKs, resource quirks), inject manually: `apktool d base.apk`,
+drop `libgadget.so` into `lib/<abi>/`, add a `System.loadLibrary("gadget")` to the app's
+first-run smali, `apktool b`, then `zipalign -p 4` + `apksigner sign --ks <debug.keystore>`.
+To trust the proxy CA without root, in the decoded app add/modify
+`res/xml/network_security_config.xml` with a `<certificates src="user"/>` trust-anchor
+(and reference it from the manifest) before rebuilding — then install the proxy CA as a
+*user* cert (`Settings > Security`), which the repackaged app now honours. Route traffic
+with the same `adb reverse` recipe below.
 
 ## Start frida-server on the emulator (concrete — version match is mandatory)
 The `frida-server` version MUST equal the sandbox client (`frida --version`); a

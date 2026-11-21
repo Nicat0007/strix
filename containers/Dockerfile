@@ -11,15 +11,26 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends golang-go git ca-certificates
 
 ENV GOBIN=/out/bin
+# Network-resilient module fetch. The build host's egress to sum.golang.org is flaky
+# (intermittent "unexpected EOF" on the checksum-DB tiles) and proxy.golang.org has
+# refused connections mid-build; both abort the whole RUN. GOSUMDB=off skips the
+# transparency-log verification (modules still come from the proxy), GOPROXY falls back
+# to direct VCS when the proxy refuses, and the retry loop rides out transient drops.
+ENV GOPROXY=https://proxy.golang.org,direct \
+    GOSUMDB=off
 RUN mkdir -p /out/bin && \
-    go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest && \
-    go install -v github.com/projectdiscovery/katana/cmd/katana@latest && \
-    go install -v github.com/projectdiscovery/cvemap/cmd/vulnx@latest && \
-    go install -v github.com/jaeles-project/gospider@latest && \
-    go install -v github.com/projectdiscovery/interactsh/cmd/interactsh-client@latest && \
-    go install -v golang.org/x/vuln/cmd/govulncheck@latest && \
-    go install -v github.com/lc/gau/v2/cmd/gau@latest && \
-    go install -v github.com/tomnomnom/waybackurls@latest
+    n=0; until [ "$n" -ge 4 ]; do \
+      go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest && \
+      go install -v github.com/projectdiscovery/katana/cmd/katana@latest && \
+      go install -v github.com/projectdiscovery/cvemap/cmd/vulnx@latest && \
+      go install -v github.com/jaeles-project/gospider@latest && \
+      go install -v github.com/projectdiscovery/interactsh/cmd/interactsh-client@latest && \
+      go install -v golang.org/x/vuln/cmd/govulncheck@latest && \
+      go install -v github.com/lc/gau/v2/cmd/gau@latest && \
+      go install -v github.com/tomnomnom/waybackurls@latest && break; \
+      n=$((n+1)); echo "go install attempt $n failed; retrying in 15s"; sleep 15; \
+    done; \
+    test -x /out/bin/httpx && test -x /out/bin/waybackurls
 
 # ---------------------------------------------------------------------------
 # Runtime stage
@@ -105,6 +116,20 @@ RUN pipx install arjun && \
     pipx install frida-tools && \
     pipx install androguard && \
     pipx install objection
+
+# Mobile APK-repackaging toolchain for the NON-ROOTED dynamic path. On a non-rooted
+# device (or real phone) `frida-server` + `su` is unavailable, so TLS unpinning +
+# traffic capture must come from a REPACKAGED app with an embedded Frida gadget
+# (`objection patchapk` / manual gadget injection). apksigner + zipalign re-sign and
+# align the rebuilt APK; aapt inspects manifest/badging. Harmless for rooted flows.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends apksigner zipalign aapt && \
+    rm -rf /var/lib/apt/lists/*
+
+# mobsfscan: the lightweight MobSF static SAST engine (semgrep-based Android/iOS
+# security rules) WITHOUT the heavy MobSF Django app — a one-shot static scan over
+# the decompiled app source that complements jadx/apktool + the android.md sweep.
+RUN pipx install mobsfscan
 
 # Default ADB bridge target: the container's adb client talks to the operator's
 # HOST adb server (and thus their Genymotion) via the host-gateway mapping. Only
