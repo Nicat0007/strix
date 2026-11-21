@@ -13,6 +13,67 @@ the Android-specific entry points, sinks and guards below. **Instance discipline
 (`source_aware_discovery.md`): every exported component / deep link / WebView / bridge
 / provider is its own candidate — one root cause is not one candidate.**
 
+## Mobile Assessment — Phase Order (run these in sequence; don't skip ahead)
+A mobile assessment is a pipeline, not a scan. Each phase feeds the next; the big
+wins are in phases 2 and 5.
+1. **Acquire & decompile** — a file-staged `.apk` is already decompiled at container
+   start. An `adb://<pkg>` target: bring up the bridge (`tooling/adb.md`), `pm path` +
+   `adb pull` every split, then `apktool d` + `jadx -d` yourself.
+2. **Framework triage (Step 0 below) — ALWAYS first after decompile.** It decides
+   whether `java/` is the real source (native) or the logic lives in a JS bundle
+   (React Native), `libapp.so` (Flutter), `assets/www/` (Cordova), or `.dll`s (Xamarin).
+   Everything downstream depends on getting this right.
+3. **Static backend-API extraction (the #1 win)** — pull every endpoint/param/auth
+   scheme → `record_endpoint`/`ingest_recon_endpoints` (`discovery_source="apk"`). This
+   alone usually yields the highest-severity bugs, because the backend is an ordinary
+   web target the existing executors are elite at.
+4. **Static app-surface sweep** — exported components, deep links, WebView bridges,
+   providers, secrets, storage, crypto, network config (sections below). Each instance
+   is its own candidate; `record_coverage` per surface.
+5. **Dynamic confirmation (`tooling/adb.md` + `tooling/frida.md`)** — on the connected
+   Genymotion: `am start`/`content` to prove exported-component/provider findings, and
+   **Frida TLS-unpin + `adb reverse` proxy capture to turn the live backend into an
+   in-scope web target** (phase 3's endpoints, now with real traffic/params/tokens).
+6. **Hunt the backend with the web executors** — the captured/extracted API runs the
+   normal black-box brain (sqli/oob/idor/authz/mass-assignment/graphql/...), hypotheses,
+   coverage, counterevidence. This is where mobile findings actually get proven and filed.
+7. **Chain** — a client-leaked secret/endpoint + a backend authz gap, a deep-link +
+   OAuth token theft, an exported component + a provider read (per `root_agent.md`'s
+   chaining pass).
+Dynamic steps that can't run (no bridge, hardened RASP) are `blocked`, never
+`ruled_out` — record and fall back to the static backend-API path, which stands alone.
+
+## Step 0 — Detect the app framework FIRST (do this before anything else)
+The decompiled Java is only the real source for **native Java/Kotlin** apps. A
+cross-platform app's logic lives somewhere jadx won't show it — mis-triaging here
+wastes the whole assessment. Fingerprint before you read:
+```
+ls apk/assets/ apk/lib/*/ ; rg -n "flutter|reactnative|cordova|xamarin|mono|unity" apk/AndroidManifest.xml apk/res/ 2>/dev/null
+```
+- **Native Java/Kotlin** — no cross-platform marker; `java/` IS the source. Proceed
+  with the full methodology below as written.
+- **React Native** — `lib/*/libreactnativejni.so` or `assets/index.android.bundle`.
+  **The entire app logic is in that JS bundle** — treat it EXACTLY like a web JS
+  bundle (`asset_discovery.md` JS-mining): `rg -n "https?://|/api/|fetch\(|axios|token|secret|AsyncStorage" apk/assets/index.android.bundle`.
+  If Hermes-compiled (not readable text), decompile with `hermes-dec`/`hbctool` first.
+  This is usually a *goldmine* of endpoints and secrets — the highest-yield RN output.
+- **Flutter** — `lib/*/libflutter.so` + `lib/*/libapp.so`. Dart is AOT-compiled into
+  `libapp.so`; jadx shows almost nothing. Extract strings/endpoints from `libapp.so`
+  (`rg -a "https?://" apk/lib/*/libapp.so`), and know pinning lives in BoringSSL
+  inside `libflutter.so` — the generic unpin hooks fail; see `frida.md`'s Flutter note
+  (reFlutter / `ssl_verify_peer_cert` native hook). The backend API is still the win.
+- **Cordova / Ionic / Capacitor (hybrid WebView)** — `assets/www/` holds HTML/JS/CSS.
+  It's a web app in a WebView: grep `assets/www/` for endpoints/secrets and test the
+  JS for DOM-XSS/`config.xml` whitelist bypass; the WebView bridge is the native edge.
+- **Xamarin / .NET MAUI** — `assembly/*.dll` or `assemblies/` (sometimes LZ4-packed).
+  Decompile the DLLs with `ilspycmd`/`monodis`; the logic and endpoints are there, not
+  in `java/`.
+- **Unity** — `assets/bin/Data/Managed/Assembly-CSharp.dll` (decompile with ilspy) or
+  IL2CPP (`libil2cpp.so` + `global-metadata.dat` → Il2CppDumper). Usually a game; still
+  mine for backend/API keys.
+Record the detected framework in a note; it dictates the decompiler, the grep targets,
+and the unpinning approach for the entire run.
+
 ## The #1 output — extract the backend API
 A decompiled app is a map to the server. This is usually the fastest path to real
 bugs (the §15 payoff ranking), because the app's backend is the same class of

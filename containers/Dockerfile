@@ -103,7 +103,8 @@ RUN pipx install arjun && \
     pipx inject dirsearch 'setuptools<81' && \
     pipx install wafw00f && \
     pipx install frida-tools && \
-    pipx install androguard
+    pipx install androguard && \
+    pipx install objection
 
 # Default ADB bridge target: the container's adb client talks to the operator's
 # HOST adb server (and thus their Genymotion) via the host-gateway mapping. Only
