@@ -400,6 +400,32 @@ else mapped.
    `redirect_uri` tricks, LLM tool-call abuse). This is the direct counter to the
    duplicate problem: it steers hunters to what the crowd misses, not what they re-find.
 
+**Write it as a concrete artifact, not just in your head** — `/workspace/recon/attack_graph.md`,
+two tables a subagent can also read and append to:
+
+```
+## Nodes
+| id    | kind                    | value / locator                 | reached? | via (edge id) |
+|-------|-------------------------|---------------------------------|----------|---------------|
+| n1    | origin                  | https://host:8443 (staging)     | yes      | recon         |
+| n2    | credential              | admin:*** (staging default)     | yes      | e1            |
+| n3    | origin                  | https://host (prod)             | yes      | recon         |
+| n4    | object-id-class         | case_id (sequential int)        | partial  | e2            |
+| n5    | internal-host           | 169.254.169.254 (metadata)      | no       | -             |
+
+## Edges  (source finding/lead  ->  node it unlocks)
+| id | from finding / lead                         | unlocks node | validated? |
+|----|---------------------------------------------|--------------|------------|
+| e1 | default creds on staging panel (n1)         | n2           | yes        |
+| e2 | info-leak returns case_id of other users    | n4           | yes        |
+| e3 | n2 creds reused on prod (n3) -> admin        | n3 as admin  | TEST THIS  |
+| e4 | SSRF param on n3 -> fetch n5                 | n5           | TEST THIS  |
+```
+Each new finding/lead = one new edge; each `TEST THIS` edge is a dispatch for a hunter or
+the validation pass below. An unreached high-value node (prod-admin, cloud metadata, a
+cross-tenant object) with an untested inbound edge is the highest-priority work on the
+board — that is where the chain, and the payout, is.
+
 The graph is the root agent's working memory; the pass below is where you harvest it.
 
 ## Chain Findings Before Finishing
