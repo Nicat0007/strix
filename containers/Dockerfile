@@ -122,9 +122,13 @@ RUN pipx install arjun && \
 # traffic capture must come from a REPACKAGED app with an embedded Frida gadget
 # (`objection patchapk` / manual gadget injection). apksigner + zipalign re-sign and
 # align the rebuilt APK; aapt inspects manifest/badging. Harmless for rooted flows.
+# apt needs root; the build switched to USER pentester above, so switch back for this.
+USER root
+# NOTE: do not `rm -rf /var/lib/apt/lists/*` here — a later bare `apt-get install
+# wapiti` (no update of its own) relies on the package lists staying present.
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends apksigner zipalign aapt && \
-    rm -rf /var/lib/apt/lists/*
+    apt-get install -y --no-install-recommends apksigner zipalign aapt
+USER pentester
 
 # mobsfscan: the lightweight MobSF static SAST engine (semgrep-based Android/iOS
 # security rules) WITHOUT the heavy MobSF Django app — a one-shot static scan over
