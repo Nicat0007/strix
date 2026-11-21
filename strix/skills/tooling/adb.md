@@ -11,19 +11,34 @@ inside the container — this sidesteps needing KVM/emulation inside Docker.
 
 ## The bridge (set up once; the host step is the operator's)
 
-**Host (operator runs this — you cannot touch their host):** expose the ADB
-server on the network and have Genymotion running:
+**Host (operator runs this — you cannot touch their host).** The default adb
+server binds `127.0.0.1` only, which the container CANNOT reach; it must be
+rebound to all interfaces on 5037. A plain `adb kill-server` often does not free
+the port (Genymotion / Android Studio keep an adb alive, and any `adb` command
+re-spawns a `127.0.0.1` server), giving `cannot bind to 0.0.0.0:5037 ... (10048)`.
+Kill ALL adb first, then start the exposed server, then attach the Genymotion
+device to it:
 ```
-adb kill-server
-adb -a -P 5037 nodaemon server    # listen on all interfaces
-# Genymotion open; `adb devices` on the host must list the emulator
+# Windows (PowerShell) — kill every adb, then bind all interfaces (keep open):
+taskkill /F /IM adb.exe
+<path>\adb.exe -a -P 5037 nodaemon server
+#   (Linux/mac host:  pkill -f adb ; adb -a -P 5037 nodaemon server )
+# In a SECOND terminal, attach the Genymotion device to THIS server:
+<path>\adb.exe connect 192.168.56.111:5555     # the IP from `adb devices`
+<path>\adb.exe devices                          # must now list that device
 ```
-**Container (you run this):** point the ADB client at the host server via the
-already-present `host.docker.internal` → host-gateway mapping:
+Allow inbound TCP 5037 if Windows Firewall prompts. Keep the server using the
+SAME adb binary Genymotion uses (Genymotion → Settings → ADB → custom SDK tools
+pointed at the platform-tools folder) so client/server versions match — a version
+mismatch to the container's adb shows as "adb server version doesn't match".
+
+**Container (you run this):** the image already defaults
+`ADB_SERVER_SOCKET=tcp:host.docker.internal:5037`; re-export it (survives the
+entrypoint re-exec) and check:
 ```
 export ADB_SERVER_SOCKET=tcp:host.docker.internal:5037
 adb devices          # the Genymotion device must appear; if empty, STOP — the
-                     # host bridge is not up. Record `blocked`, ask the operator.
+                     # host bridge is not up (see the host steps above).
 ```
 If `adb devices` is empty, dynamic testing is `blocked` (not `ruled_out`) — say
 so and fall back to the static analysis (`frameworks/android.md`) until the
