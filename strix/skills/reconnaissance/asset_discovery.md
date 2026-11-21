@@ -58,7 +58,7 @@ Stage state lives in `/workspace/recon/recon_state.json`, written/read by the `s
 |---|---|---|---|
 | **1 — Passive / OSINT** | CT (crt.sh), `subfinder -all`, passive DNS, ASN/IP, `gau`/`waybackurls`, dorking | **Zero** to target | High-Value Sources, `dorking` |
 | **2 — Active light** | `httpx` probe+`-td`+`-tls-grab` → per-origin `assets.jsonl`; `naabu --top-ports 1000` → `host_ports.json`; `katana` crawl + bounded headless XHR | Low (browser/crawler-like) | Consolidation & Probing |
-| **3 — Param / endpoint discovery** | `arjun`, `ffuf`/`dirsearch` content discovery, known-path probing | **High** (obvious bruteforce) | Application-Layer Recon steps 2–4 |
+| **3 — Param / endpoint discovery** | `arjun` + `x8` (hidden params, incl. body/header), `ffuf`/`dirsearch` content discovery, known-path probing | **High** (obvious bruteforce) | Application-Layer Recon steps 2–4 |
 | **4 — Vuln fingerprinting** | `nuclei`, a **per-origin** selector manifest (never one tag list across every origin) | Moderate, bounded | Layer 4 (below) |
 
 ### Ordering conventions (agent-honored, not enforced)
@@ -406,8 +406,16 @@ A secret is only reported once verified live or clearly valid (per `analysis/cou
 ### 4. Parameter Discovery
 
 - On endpoints that look dynamic or DB-backed (query strings, form posts, REST resource paths), run `arjun -u <url>` (GET) and `arjun -u <url> -m POST` to surface parameters absent from the crawl.
-- This is a recon step, not just an IDOR trick — hidden parameters (`debug`, `role`, `format`, `redirect`, `filter`) reshape an endpoint's whole attack surface before any specific vuln class is tested.
-- Feed every discovered parameter back into the attack-surface inventory with its source and location — `record_endpoint(url=..., method=..., parameters='[{"name":"role","location":"query"}]', discovery_source="arjun")` merges the parameter onto the existing endpoint rather than creating a duplicate.
+- **Then go deeper with `x8`** (faster, response-diff based, finds what arjun misses):
+  `x8 -u "<url>" -X GET POST -w <param-wordlist> -o x8.json`. x8's edge over arjun is
+  it also probes **body/JSON and header** parameters (not just query), batches candidates
+  with automatic response-diff noise handling, and is quick enough to run on every
+  `api`/`app` origin. Use a focused param wordlist (SecLists `burp-parameter-names`, or
+  the endpoint's own observed field names) — not a giant generic list on a program that
+  bans noisy scanning. Hidden params are where ~70% of IDOR/XSS/SQLi/mass-assignment
+  bugs hide, so this is high-signal, not filler.
+- This is a recon step, not just an IDOR trick — hidden parameters (`debug`, `role`, `format`, `redirect`, `filter`, `is_admin`, `user_id`, `callback`) reshape an endpoint's whole attack surface before any specific vuln class is tested.
+- Feed every discovered parameter back into the attack-surface inventory with its source and location — `record_endpoint(url=..., method=..., parameters='[{"name":"role","location":"query"}]', discovery_source="arjun")` (or `discovery_source="x8"`) merges the parameter onto the existing endpoint rather than creating a duplicate. A found param is immediately a `mutation_candidates.md` row for `parameter_mutation_testing.md`.
 
 ### 5. Prioritization — Attack Queue
 

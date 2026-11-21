@@ -239,6 +239,14 @@ RUN curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/
 
 RUN apt-get install -y wapiti
 
+# x8 — fast hidden-parameter discovery (response-diff based). Deepens the param
+# surface where ~70% of IDOR/XSS/SQLi hide; complements arjun in recon. Single
+# gzipped Linux binary from GitHub releases (latest-by-name redirect, no version pin).
+RUN curl -fsSL "https://github.com/Sh1Yo/x8/releases/latest/download/x86_64-linux-x8.gz" -o /tmp/x8.gz && \
+    gzip -d /tmp/x8.gz && \
+    install -m 0755 /tmp/x8 /usr/local/bin/x8 && \
+    rm -f /tmp/x8.gz /tmp/x8
+
 USER pentester
 
 RUN pipx install semgrep && \
