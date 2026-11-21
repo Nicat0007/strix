@@ -30,10 +30,33 @@ so and fall back to the static analysis (`frameworks/android.md`) until the
 operator brings the bridge up. Genymotion is **rooted**, so `adb root` works —
 use it only on the authorized emulator, never a real device with real data.
 
+## Acquire the APK from the device (autonomous `adb://<package>` flow)
+
+When the target is `adb://<package>` the operator installed the app from the Play
+Store onto the emulator and Strix pulls it itself — do this first, then decompile
+at runtime and analyse:
+```
+adb shell pm list packages | rg <name>            # find the exact package if unsure
+adb shell pm path <package>                        # prints package:/data/app/.../base.apk
+mkdir -p /workspace/mobile-apps
+# pull EVERY line pm path prints (modern apps are split: base.apk + split_config.*.apk)
+adb shell pm path <package> | sed 's/^package://' | while read p; do
+  adb pull "$p" /workspace/mobile-apps/ ; done
+# decompile at runtime (the entrypoint only auto-decompiles file-staged APKs):
+for a in /workspace/mobile-apps/*.apk; do
+  apktool d -f -o "${a%.apk}-decompiled/apk" "$a" || echo "apktool warn $a"
+  jadx -d "${a%.apk}-decompiled/java" "$a" || echo "jadx warn $a"
+done
+```
+If the app is split-APK, analyse `base.apk` as the primary and note the splits.
+Then proceed exactly as `frameworks/android.md` (white-box over the decompiled
+tree) + the dynamic steps below. A Play-protected/licensed app whose APK will not
+pull is `blocked`, not `ruled_out`.
+
 ## Core idioms (prove the static findings)
 
-- **Install the target APK:** `adb install -r /workspace/mobile-apps/<app>.apk`
-  (the same APK that was decompiled statically).
+- **Install the target APK** (if you have a file, not a device-installed app):
+  `adb install -r /workspace/mobile-apps/<app>.apk`.
 - **Exported Activity launch / intent injection** (prove an exported-component
   or deep-link finding): `adb shell am start -n <pkg>/<.Activity> --es key val`,
   deep link `adb shell am start -a android.intent.action.VIEW -d "myapp://host/path?token=x"`,

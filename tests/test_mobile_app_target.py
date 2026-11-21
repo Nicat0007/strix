@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from strix.core.inputs import (
     build_root_task,
     build_scope_context,
@@ -80,3 +82,43 @@ def test_root_task_renders_mobile_section() -> None:
     assert "/x/app.apk" in task
     assert "frameworks/android.md" in task
     assert "decompiled" in task.lower()
+
+
+# --------------------------------------------------------------------------- #
+# Autonomous acquire-from-device (adb://<package>)
+# --------------------------------------------------------------------------- #
+
+
+def test_adb_scheme_is_device_acquire_mobile_app() -> None:
+    ttype, details = infer_target_type("adb://com.example.app")
+    assert ttype == "mobile_app"
+    assert details["target_package"] == "com.example.app"
+    assert details["acquire"] == "device"
+    assert "target_apk" not in details
+    # android:// is an accepted alias
+    assert infer_target_type("android://com.foo.bar")[1]["target_package"] == "com.foo.bar"
+
+
+def test_adb_scheme_without_package_errors() -> None:
+    with pytest.raises(ValueError, match="package name"):
+        infer_target_type("adb://")
+
+
+def test_device_acquire_is_whitebox_and_not_staged() -> None:
+    target = {"type": "mobile_app",
+              "details": {"target_package": "com.example.app", "acquire": "device"}}
+    assert is_whitebox_targets([target])
+    # a device target has no on-disk .apk -> nothing to stage (no KeyError)
+    assert stage_mobile_apps([target], run_name="r") == []
+
+
+def test_device_acquire_scope_and_root_task() -> None:
+    cfg = {"targets": [{"type": "mobile_app",
+                        "details": {"target_package": "com.example.app", "acquire": "device"}}]}
+    ctx = build_scope_context(cfg)
+    entry = next(a for a in ctx["authorized_targets"] if a["type"] == "mobile_app")
+    assert entry["value"] == "com.example.app"       # package is the scope value
+    task = build_root_task(cfg)
+    assert "com.example.app" in task
+    assert "pm path" in task and "adb pull" in task   # autonomous acquire instruction
+    assert "frameworks/android.md" in task

@@ -107,7 +107,7 @@ def _render_workspace_files(scan_config: dict[str, Any]) -> list[str]:
     ]
 
 
-def build_root_task(scan_config: dict[str, Any]) -> str:
+def build_root_task(scan_config: dict[str, Any]) -> str:  # noqa: PLR0912
     targets = scan_config.get("targets", []) or []
     diff_scope = scan_config.get("diff_scope") or {}
     user_instructions = scan_config.get("user_instructions", "") or ""
@@ -147,16 +147,31 @@ def build_root_task(scan_config: dict[str, Any]) -> str:
         elif ttype == "api_spec":
             sections["API Specifications"].extend(_render_api_spec(details))
         elif ttype == "mobile_app":
-            apk = details.get("target_apk", "unknown")
-            sections["Mobile Applications"].append(
-                f"- {apk} (Android APK, available decompiled under {workspace_path}: "
-                "a `*-decompiled/java` tree from jadx and a `*-decompiled/apk` tree from "
-                "apktool — AndroidManifest.xml, res/, network_security_config — produced at "
-                "container start. Treat it as WHITE-BOX source: enumerate exported "
-                "components/permissions/deep-links/WebView bridges, hunt sinks and hardcoded "
-                "secrets, and load `frameworks/android.md`. The app's backend API, once found "
-                "in the code or observed dynamically, is in scope as part of this application.)"
-            )
+            if details.get("acquire") == "device" or details.get("target_package"):
+                pkg = details.get("target_package", "unknown")
+                sections["Mobile Applications"].append(
+                    f"- Android package `{pkg}` installed on the connected emulator "
+                    "(autonomous acquire-from-device). First set up ADB (see `tooling/adb.md`: "
+                    "`adb devices` must show the Genymotion device), then ACQUIRE the APK "
+                    f"yourself: `adb shell pm path {pkg}` → `adb pull <path> "
+                    "/workspace/mobile-apps/` (pull every split too), DECOMPILE it at runtime "
+                    "(`apktool d` + `jadx -d` into `*-decompiled/`), then analyse it as WHITE-BOX "
+                    "source per `frameworks/android.md` (exported components, deep links, WebView "
+                    "bridges, secrets, backend API → attack_surface → web executors) AND run the "
+                    "dynamic pass on the live app (`tooling/frida.md`: unpin, capture traffic, "
+                    "hook). The app's backend API is in scope as part of this application.)"
+                )
+            else:
+                apk = details.get("target_apk", "unknown")
+                sections["Mobile Applications"].append(
+                    f"- {apk} (Android APK, available decompiled under {workspace_path}: "
+                    "a `*-decompiled/java` tree from jadx and a `*-decompiled/apk` tree from "
+                    "apktool — AndroidManifest.xml, res/, network_security_config — produced at "
+                    "container start. Treat it as WHITE-BOX source: enumerate exported "
+                    "components/permissions/deep-links/WebView bridges, hunt sinks and hardcoded "
+                    "secrets, and load `frameworks/android.md`. The app's backend API, once found "
+                    "in the code or observed dynamically, is in scope as part of this application.)"
+                )
 
     parts: list[str] = []
     for label, items in sections.items():
@@ -239,6 +254,9 @@ def build_scope_context(scan_config: dict[str, Any]) -> dict[str, Any]:
         details = target.get("details") or {}
         key = value_keys.get(ttype)
         value = details.get(key, "") if key is not None else target.get("original", "")
+        if ttype == "mobile_app" and not value:
+            # a device-acquire mobile_app has no on-disk .apk, only a package name.
+            value = details.get("target_package", "")
 
         workspace_subdir = details.get("workspace_subdir")
         workspace_path = f"/workspace/{workspace_subdir}" if workspace_subdir else ""

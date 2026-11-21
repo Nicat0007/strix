@@ -105,6 +105,13 @@ RUN pipx install arjun && \
     pipx install frida-tools && \
     pipx install androguard
 
+# Default ADB bridge target: the container's adb client talks to the operator's
+# HOST adb server (and thus their Genymotion) via the host-gateway mapping. Only
+# used by the mobile (adb/frida) flows; harmless otherwise. The host must expose
+# its adb server (`adb -a -P 5037 nodaemon server`); tooling/adb.md re-exports
+# this too so it survives the entrypoint UID-remap re-exec.
+ENV ADB_SERVER_SOCKET=tcp:host.docker.internal:5037
+
 ENV NPM_CONFIG_PREFIX=/home/pentester/.npm-global
 RUN mkdir -p /home/pentester/.npm-global
 

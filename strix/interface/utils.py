@@ -1130,7 +1130,7 @@ def _is_http_git_repo(url: str) -> bool:
         return False
 
 
-def infer_target_type(target: str) -> tuple[str, dict[str, str]]:  # noqa: PLR0911
+def infer_target_type(target: str) -> tuple[str, dict[str, str]]:  # noqa: PLR0911, PLR0915
     if not target or not isinstance(target, str):
         raise ValueError("Target must be a non-empty string")
 
@@ -1160,6 +1160,21 @@ def infer_target_type(target: str) -> tuple[str, dict[str, str]]:  # noqa: PLR09
         if env_uid:
             details["environment_uid"] = env_uid
         return "api_spec", details
+
+    if parsed.scheme in ("adb", "android"):
+        # Autonomous acquire-from-device: the app is installed on the connected
+        # emulator (operator installed it from the Play Store); Strix pulls the
+        # APK off the device itself at runtime, decompiles it, then static+dynamic.
+        package = f"{parsed.netloc}{parsed.path}".strip("/")
+        if not package:
+            raise ValueError(
+                f"Missing package name in '{target}' (expected adb://<package.name>)"
+            )
+        return "mobile_app", {
+            "target_package": package,
+            "mobile_platform": "android",
+            "acquire": "device",
+        }
 
     if parsed.scheme in ("http", "https"):
         if parsed.username or parsed.password:
@@ -1572,7 +1587,13 @@ def stage_mobile_apps(targets_info: list[dict[str, Any]], run_name: str) -> list
     on the host. Each target's ``workspace_path`` records where the agent finds the
     APK and its ``*-decompiled`` tree.
     """
-    apps = [t for t in targets_info if t.get("type") == "mobile_app"]
+    # Only file-based (.apk on disk) targets are staged. A device-acquire target
+    # (adb://<package>) has no on-disk APK — the agent pulls it off the emulator at
+    # runtime — so it is skipped here.
+    apps = [
+        t for t in targets_info
+        if t.get("type") == "mobile_app" and (t.get("details") or {}).get("target_apk")
+    ]
     if not apps:
         return []
 
