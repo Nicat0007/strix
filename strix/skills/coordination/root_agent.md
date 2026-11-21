@@ -392,6 +392,13 @@ else mapped.
    single-request surface (reflected XSS on the main page, missing headers, clickjacking)
    that is both dup-bait and, on most programs, explicitly excluded. Spend LLM budget
    where first-to-report lives, per `analysis/candidate_triage.md`'s rubric.
+4. **Equip every hunter with the variant catalog.** Spawn vuln-hunting subagents with
+   `custom/disclosed_patterns` loaded alongside their class skill (e.g. `skills=["idor",
+   "disclosed_patterns"]`). It is the cross-class catalog of real disclosed-report
+   mechanisms — the non-obvious variant that turns a clean standard test into a
+   first-to-report finding (blind IDOR, parser-diff SSRF, payment-step bypass, OAuth
+   `redirect_uri` tricks, LLM tool-call abuse). This is the direct counter to the
+   duplicate problem: it steers hunters to what the crowd misses, not what they re-find.
 
 The graph is the root agent's working memory; the pass below is where you harvest it.
 
